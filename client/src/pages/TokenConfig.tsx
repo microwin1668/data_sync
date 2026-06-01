@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import {
-  Card, Form, Input, Button, Space, message, Alert, Typography, Tabs, Table, Modal, Tag, Popconfirm, Tooltip, Checkbox
+  Card, Form, Input, Button, Space, message, Alert, Typography, Tabs, Table, Modal, Tag, Popconfirm, Tooltip, Checkbox, Row, Col
 } from 'antd';
 import {
   KeyOutlined, SaveOutlined, SendOutlined, DatabaseOutlined,
@@ -75,14 +75,18 @@ const TokenConfigTab: React.FC = () => {
         >
           <Input placeholder="http://dataapi.example.com/open_api/authentication/get_access_token" />
         </Form.Item>
-        <Space style={{ width: '100%' }} size="large">
-          <Form.Item label="Key" name="key" style={{ flex: 1 }}>
-            <Input placeholder="key 参数值（如有）" />
-          </Form.Item>
-          <Form.Item label="Secret" name="secret" style={{ flex: 1 }}>
-            <Input.Password placeholder="secret 参数值（如有）" />
-          </Form.Item>
-        </Space>
+        <Row gutter={16}>
+          <Col xs={24} sm={12}>
+            <Form.Item label="Key" name="key">
+              <Input placeholder="key 参数值（如有）" />
+            </Form.Item>
+          </Col>
+          <Col xs={24} sm={12}>
+            <Form.Item label="Secret" name="secret">
+              <Input.Password placeholder="secret 参数值（如有）" />
+            </Form.Item>
+          </Col>
+        </Row>
         <Space>
           <Button type="primary" icon={<SaveOutlined />} onClick={handleSave} loading={loading}>保存配置</Button>
           <Button icon={<SendOutlined />} onClick={handleFetchToken} loading={fetching}>获取 Token</Button>
@@ -233,6 +237,7 @@ const PgSourcesTab: React.FC = () => {
         loading={loading}
         pagination={false}
         size="small"
+        scroll={{ x: 'max-content' }}
       />
 
       <Modal
@@ -248,30 +253,42 @@ const PgSourcesTab: React.FC = () => {
           <Form.Item label="数据源名称" name="name" rules={[{ required: true, message: '请输入名称' }]}>
             <Input placeholder="例如：本地 PG、生产数据库" />
           </Form.Item>
-          <Space style={{ width: '100%' }} size="large">
-            <Form.Item label="主机地址" name="host" rules={[{ required: true, message: '请输入主机地址' }]} style={{ flex: 1 }}>
-              <Input placeholder="localhost 或 IP" />
-            </Form.Item>
-            <Form.Item label="端口" name="port" rules={[{ required: true, message: '请输入端口' }]} style={{ width: 100 }}>
-              <Input placeholder="5432" />
-            </Form.Item>
-          </Space>
-          <Space style={{ width: '100%' }} size="large">
-            <Form.Item label="用户名" name="user" rules={[{ required: true, message: '请输入用户名' }]} style={{ flex: 1 }}>
-              <Input placeholder="postgres" />
-            </Form.Item>
-            <Form.Item label="密码" name="password" style={{ flex: 1 }}>
-              <Input.Password placeholder="数据库密码" />
-            </Form.Item>
-          </Space>
-          <Space style={{ width: '100%' }} size="large">
-            <Form.Item label="数据库名" name="database" rules={[{ required: true, message: '请输入数据库名' }]} style={{ flex: 1 }}>
-              <Input placeholder="data_sync" />
-            </Form.Item>
-            <Form.Item label="Schema" name="schema" style={{ flex: 1 }}>
-              <Input placeholder="public" />
-            </Form.Item>
-          </Space>
+          <Row gutter={16}>
+            <Col xs={24} sm={16}>
+              <Form.Item label="主机地址" name="host" rules={[{ required: true, message: '请输入主机地址' }]}>
+                <Input placeholder="localhost 或 IP" />
+              </Form.Item>
+            </Col>
+            <Col xs={24} sm={8}>
+              <Form.Item label="端口" name="port" rules={[{ required: true, message: '请输入端口' }]}>
+                <Input placeholder="5432" />
+              </Form.Item>
+            </Col>
+          </Row>
+          <Row gutter={16}>
+            <Col xs={24} sm={12}>
+              <Form.Item label="用户名" name="user" rules={[{ required: true, message: '请输入用户名' }]}>
+                <Input placeholder="postgres" />
+              </Form.Item>
+            </Col>
+            <Col xs={24} sm={12}>
+              <Form.Item label="密码" name="password">
+                <Input.Password placeholder="数据库密码" />
+              </Form.Item>
+            </Col>
+          </Row>
+          <Row gutter={16}>
+            <Col xs={24} sm={12}>
+              <Form.Item label="数据库名" name="database" rules={[{ required: true, message: '请输入数据库名' }]}>
+                <Input placeholder="data_sync" />
+              </Form.Item>
+            </Col>
+            <Col xs={24} sm={12}>
+              <Form.Item label="Schema" name="schema">
+                <Input placeholder="public" />
+              </Form.Item>
+            </Col>
+          </Row>
         </Form>
       </Modal>
     </div>

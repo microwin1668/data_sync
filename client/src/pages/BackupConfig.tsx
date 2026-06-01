@@ -437,6 +437,7 @@ const BackupPage: React.FC = () => {
           )}
         </div>
         <Table dataSource={configs} columns={columns} rowKey="id" loading={loading} pagination={false} size="small"
+          scroll={{ x: 'max-content' }}
           rowSelection={{
             selectedRowKeys: selectedKeys,
             onChange: (keys: React.Key[]) => setSelectedKeys(keys as number[]),
@@ -496,6 +497,7 @@ const BackupPage: React.FC = () => {
         )}
         <Table dataSource={logs} columns={logColumns} rowKey="id"
           pagination={false} size="small"
+          scroll={{ x: 'max-content' }}
           rowSelection={{
             selectedRowKeys: logSelectedKeys,
             onChange: (keys: React.Key[]) => setLogSelectedKeys(keys as number[]),

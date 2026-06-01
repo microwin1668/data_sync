@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import {
   Card, Table, Button, Space, Modal, Form, Input, Select, message, Popconfirm, Tag, Typography, InputNumber,
-  Switch, Badge, Progress, Tooltip,
+  Switch, Badge, Progress, Tooltip, Row, Col,
 } from 'antd';
 import {
   PlusOutlined, EditOutlined, DeleteOutlined, PlayCircleOutlined, ClockCircleOutlined,
@@ -19,6 +19,13 @@ const { Text } = Typography;
 const TaskManager: React.FC = () => {
   const [tasks, setTasks] = useState<SyncTask[]>([]);
   const [configs, setConfigs] = useState<SyncConfig[]>([]);
+  const [isMobile, setIsMobile] = useState(window.innerWidth < 768);
+
+  useEffect(() => {
+    const handleResize = () => setIsMobile(window.innerWidth < 768);
+    window.addEventListener('resize', handleResize);
+    return () => window.removeEventListener('resize', handleResize);
+  }, []);
   const [backupConfigs, setBackupConfigs] = useState<{ id: number; name: string }[]>([]);
   const [loading, setLoading] = useState(false);
   const [editOpen, setEditOpen] = useState(false);
@@ -561,18 +568,22 @@ const TaskManager: React.FC = () => {
             {({ getFieldValue }) => {
               const type = getFieldValue('type');
               if (type === 'interval') return (
-                <Space style={{ width: '100%' }}>
-                  <Form.Item label="间隔值" name="interval_value" rules={[{ required: true, message: '请输入间隔值' }]}>
-                    <Input type="number" min={1} style={{ width: 120 }} />
-                  </Form.Item>
-                  <Form.Item label="单位" name="interval_unit">
-                    <Select style={{ width: 100 }} options={[
-                      { value: 'minutes', label: '分钟' },
-                      { value: 'hours', label: '小时' },
-                      { value: 'days', label: '天' },
-                    ]} />
-                  </Form.Item>
-                </Space>
+                <Row gutter={8}>
+                  <Col xs={24} sm={12}>
+                    <Form.Item label="间隔值" name="interval_value" rules={[{ required: true, message: '请输入间隔值' }]}>
+                      <Input type="number" min={1} style={{ width: '100%' }} />
+                    </Form.Item>
+                  </Col>
+                  <Col xs={24} sm={12}>
+                    <Form.Item label="单位" name="interval_unit">
+                      <Select style={{ width: '100%' }} options={[
+                        { value: 'minutes', label: '分钟' },
+                        { value: 'hours', label: '小时' },
+                        { value: 'days', label: '天' },
+                      ]} />
+                    </Form.Item>
+                  </Col>
+                </Row>
               );
               if (type === 'daily' || type === 'once') return (
                 <Form.Item label="执行时间" name="scheduled_time" rules={[{ required: true, message: '请选择时间' }]}>
@@ -615,6 +626,7 @@ const TaskManager: React.FC = () => {
         </div>
         <Table dataSource={execLogs} columns={logColumns} rowKey="id"
           loading={logLoading} pagination={false} size="small"
+          scroll={{ x: 'max-content' }}
           rowSelection={{
             selectedRowKeys: logSelectedKeys,
             onChange: (keys: React.Key[]) => setLogSelectedKeys(keys as number[]),

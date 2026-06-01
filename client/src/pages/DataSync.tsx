@@ -54,6 +54,13 @@ const DataSync: React.FC = () => {
   const [loading, setLoading] = useState(false);
   const [remoteTables, setRemoteTables] = useState<RemoteTable[]>([]);
   const [pgSources, setPgSources] = useState<PgDatasource[]>([]);
+  const [isMobile, setIsMobile] = useState(window.innerWidth < 768);
+
+  useEffect(() => {
+    const handleResize = () => setIsMobile(window.innerWidth < 768);
+    window.addEventListener('resize', handleResize);
+    return () => window.removeEventListener('resize', handleResize);
+  }, []);
 
   const [editOpen, setEditOpen] = useState(false);
   const [editingId, setEditingId] = useState<number | null>(null);
@@ -412,6 +419,7 @@ const DataSync: React.FC = () => {
           )}
         </div>
         <Table dataSource={configs} columns={columns} rowKey="id" loading={loading} pagination={false} size="small"
+          scroll={{ x: 'max-content' }}
           rowSelection={{
             selectedRowKeys: selectedKeys,
             onChange: (keys: React.Key[]) => setSelectedKeys(keys as number[]),
@@ -512,18 +520,18 @@ const DataSync: React.FC = () => {
       >
         <Form form={form} layout="vertical">
           <Row gutter={16}>
-            <Col span={8}>
+            <Col xs={24} sm={8}>
               <Form.Item label="配置名称" name="name" rules={[{ required: true }]}>
                 <Input placeholder="如：单位信息导入" />
               </Form.Item>
             </Col>
-            <Col span={8}>
+            <Col xs={24} sm={8}>
               <Form.Item label="远程数据表" name="remote_table_id" rules={[{ required: true }]}>
                 <Select placeholder="选择数据源表" options={remoteTables.map(t => ({ value: t.id, label: t.name }))}
                   onChange={onSelectRemoteTable} allowClear />
               </Form.Item>
             </Col>
-            <Col span={8}>
+            <Col xs={24} sm={8}>
               <Form.Item label="PG 数据源" name="pg_source_id" rules={[{ required: true }]}>
                 <Select placeholder="选择数据库" options={pgSources.map(s => ({ value: s.id, label: s.name }))}
                   onChange={val => { onSelectPgSource(val); form.setFieldsValue({ target_table: undefined }); }} />
@@ -531,18 +539,18 @@ const DataSync: React.FC = () => {
             </Col>
           </Row>
           <Row gutter={16}>
-            <Col span={8}>
+            <Col xs={24} sm={8}>
               <Form.Item label="目标表" name="target_table" rules={[{ required: true }]}>
                 <Select placeholder="选择表" options={pgTables.map(t => ({ value: t, label: t }))}
                   onChange={onSelectTargetTable} showSearch />
               </Form.Item>
             </Col>
-            <Col span={6}>
+            <Col xs={12} sm={8}>
               <Form.Item label="每页条数" name="per_page">
                 <Select options={[50, 100, 200, 500, 1000].map(n => ({ value: n, label: String(n) }))} />
               </Form.Item>
             </Col>
-            <Col span={6}>
+            <Col xs={12} sm={8}>
               <Form.Item label="起始页" name="page">
                 <Input type="number" min={1} />
               </Form.Item>
@@ -581,62 +589,129 @@ const DataSync: React.FC = () => {
 
         {fields.map((f, i) => (
           <div key={f.key} style={{ marginBottom: 8 }}>
-            <Row gutter={6} style={{ background: '#fafafa', padding: '6px 0', borderRadius: 6, alignItems: 'center' }}>
-              <Col span={1} style={{ textAlign: 'center', lineHeight: '32px', fontSize: 12, color: '#8c8c8c' }}>{i + 1}</Col>
-              <Col span={3}>
-                <Select placeholder="源字段" style={{ width: '100%' }} size="small" showSearch
-                  value={f.srcField || undefined}
-                  onChange={val => updateField(f.key, { srcField: val || '' })}
-                  filterOption={(input, option) => {
-                    const lbl = String(option?.label ?? '').toLowerCase();
-                    const val = String(option?.value ?? '').toLowerCase();
-                    return lbl.includes(input.toLowerCase()) || val.includes(input.toLowerCase());
-                  }}
-                  options={srcFields.map(s => ({
-                    value: s.name,
-                    label: React.createElement('span', null,
-                      s.name,
-                      React.createElement('span', { style: { color: '#8c8c8c', fontSize: 11, marginLeft: 6 } }, s.description)
-                    ),
-                  }))}
-                  loading={srcFieldsLoading}
-                />
-              </Col>
-              <Col span={1} style={{ textAlign: 'center' }}>→</Col>
-              <Col span={3}>
-                <Select placeholder="目标字段" style={{ width: '100%' }} size="small" showSearch
-                  value={f.distField || undefined}
-                  onChange={val => updateField(f.key, { distField: val || '' })}
-                  options={dstFields.map(d => ({ value: d, label: d }))}
-                />
-              </Col>
-              <Col span={2}>
-                <Select size="small" style={{ width: '100%' }} value={f.type}
-                  onChange={val => updateField(f.key, { type: val })}
-                  options={[
-                    { value: 'string', label: 'string' }, { value: 'number', label: 'number' },
-                    { value: 'integer', label: 'integer' }, { value: 'boolean', label: 'boolean' },
-                  ]} />
-              </Col>
-              <Col span={2}>
-                <Select size="small" style={{ width: '100%' }} value={f.transformer}
-                  onChange={val => updateField(f.key, { transformer: val })}
-                  options={TRANSFORM_OPTIONS} />
-              </Col>
-              <Col span={1} style={{ textAlign: 'center' }}>
-                <Tooltip title="主键">
-                  <Checkbox checked={f.isPk} onChange={e => updateField(f.key, { isPk: e.target.checked })} />
-                </Tooltip>
-              </Col>
-              <Col span={1}>
-                <Button size="small" danger onClick={() => removeField(f.key)} disabled={fields.length <= 1}>删</Button>
-              </Col>
-            </Row>
+            {isMobile ? (
+              <Card
+                size="small"
+                style={{ background: '#fafafa', border: '1px solid #f0f0f0', borderRadius: 6, marginBottom: 8 }}
+                title={
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <span>字段 #{i + 1} {f.isPk && <Tag color="gold" style={{ marginLeft: 6 }}>PK</Tag>}</span>
+                    <Space size="small">
+                      <Checkbox checked={f.isPk} onChange={e => updateField(f.key, { isPk: e.target.checked })}>主键</Checkbox>
+                      <Button size="small" danger onClick={() => removeField(f.key)} disabled={fields.length <= 1}>删除</Button>
+                    </Space>
+                  </div>
+                }
+              >
+                <Row gutter={[8, 8]}>
+                  <Col xs={24}>
+                    <div style={{ marginBottom: 4 }}>
+                      <span style={{ fontSize: 12, color: '#8c8c8c', display: 'block', marginBottom: 2 }}>源字段:</span>
+                      <Select placeholder="源字段" style={{ width: '100%' }} size="small" showSearch
+                        value={f.srcField || undefined}
+                        onChange={val => updateField(f.key, { srcField: val || '' })}
+                        filterOption={(input, option) => {
+                          const lbl = String(option?.label ?? '').toLowerCase();
+                          const val = String(option?.value ?? '').toLowerCase();
+                          return lbl.includes(input.toLowerCase()) || val.includes(input.toLowerCase());
+                        }}
+                        options={srcFields.map(s => ({
+                          value: s.name,
+                          label: `${s.name} ${s.description ? '('+s.description+')' : ''}`,
+                        }))}
+                        loading={srcFieldsLoading}
+                      />
+                    </div>
+                  </Col>
+                  <Col xs={24}>
+                    <div style={{ marginBottom: 4 }}>
+                      <span style={{ fontSize: 12, color: '#8c8c8c', display: 'block', marginBottom: 2 }}>目标字段:</span>
+                      <Select placeholder="目标字段" style={{ width: '100%' }} size="small" showSearch
+                        value={f.distField || undefined}
+                        onChange={val => updateField(f.key, { distField: val || '' })}
+                        options={dstFields.map(d => ({ value: d, label: d }))}
+                      />
+                    </div>
+                  </Col>
+                  <Col xs={12}>
+                    <div style={{ marginBottom: 4 }}>
+                      <span style={{ fontSize: 12, color: '#8c8c8c', display: 'block', marginBottom: 2 }}>类型:</span>
+                      <Select size="small" style={{ width: '100%' }} value={f.type}
+                        onChange={val => updateField(f.key, { type: val })}
+                        options={[
+                          { value: 'string', label: 'string' }, { value: 'number', label: 'number' },
+                          { value: 'integer', label: 'integer' }, { value: 'boolean', label: 'boolean' },
+                        ]} />
+                    </div>
+                  </Col>
+                  <Col xs={12}>
+                    <div style={{ marginBottom: 4 }}>
+                      <span style={{ fontSize: 12, color: '#8c8c8c', display: 'block', marginBottom: 2 }}>转换器:</span>
+                      <Select size="small" style={{ width: '100%' }} value={f.transformer}
+                        onChange={val => updateField(f.key, { transformer: val })}
+                        options={TRANSFORM_OPTIONS} />
+                    </div>
+                  </Col>
+                </Row>
+              </Card>
+            ) : (
+              <Row gutter={6} style={{ background: '#fafafa', padding: '6px 0', borderRadius: 6, alignItems: 'center' }}>
+                <Col span={1} style={{ textAlign: 'center', lineHeight: '32px', fontSize: 12, color: '#8c8c8c' }}>{i + 1}</Col>
+                <Col span={3}>
+                  <Select placeholder="源字段" style={{ width: '100%' }} size="small" showSearch
+                    value={f.srcField || undefined}
+                    onChange={val => updateField(f.key, { srcField: val || '' })}
+                    filterOption={(input, option) => {
+                      const lbl = String(option?.label ?? '').toLowerCase();
+                      const val = String(option?.value ?? '').toLowerCase();
+                      return lbl.includes(input.toLowerCase()) || val.includes(input.toLowerCase());
+                    }}
+                    options={srcFields.map(s => ({
+                      value: s.name,
+                      label: React.createElement('span', null,
+                        s.name,
+                        React.createElement('span', { style: { color: '#8c8c8c', fontSize: 11, marginLeft: 6 } }, s.description)
+                      ),
+                    }))}
+                    loading={srcFieldsLoading}
+                  />
+                </Col>
+                <Col span={1} style={{ textAlign: 'center' }}>→</Col>
+                <Col span={3}>
+                  <Select placeholder="目标字段" style={{ width: '100%' }} size="small" showSearch
+                    value={f.distField || undefined}
+                    onChange={val => updateField(f.key, { distField: val || '' })}
+                    options={dstFields.map(d => ({ value: d, label: d }))}
+                  />
+                </Col>
+                <Col span={2}>
+                  <Select size="small" style={{ width: '100%' }} value={f.type}
+                    onChange={val => updateField(f.key, { type: val })}
+                    options={[
+                      { value: 'string', label: 'string' }, { value: 'number', label: 'number' },
+                      { value: 'integer', label: 'integer' }, { value: 'boolean', label: 'boolean' },
+                    ]} />
+                </Col>
+                <Col span={2}>
+                  <Select size="small" style={{ width: '100%' }} value={f.transformer}
+                    onChange={val => updateField(f.key, { transformer: val })}
+                    options={TRANSFORM_OPTIONS} />
+                </Col>
+                <Col span={1} style={{ textAlign: 'center' }}>
+                  <Tooltip title="主键">
+                    <Checkbox checked={f.isPk} onChange={e => updateField(f.key, { isPk: e.target.checked })} />
+                  </Tooltip>
+                </Col>
+                <Col span={1}>
+                  <Button size="small" danger onClick={() => removeField(f.key)} disabled={fields.length <= 1}>删</Button>
+                </Col>
+              </Row>
+            )}
             {/* 值映射配置 */}
             {f.transformer === 'mapping' && (
-              <div style={{ marginLeft: 30, marginTop: 4, background: '#fffbe6', padding: '4px 8px', borderRadius: 4 }}>
+              <div style={{ marginLeft: isMobile ? 8 : 30, marginTop: 4, background: '#fffbe6', padding: '4px 8px', borderRadius: 4 }}>
                 {f.mappingValues.map((r) => (
-                  <Space key={r.key} style={{ marginBottom: 2 }}>
+                  <Space key={r.key} style={{ marginBottom: 2 }} wrap>
                     <Input size="small" placeholder="原始值" style={{ width: 80 }}
                       value={r.fromValue} onChange={e => updateMappingRow(f.key, r.key, { fromValue: e.target.value })} />
                     <span>→</span>
@@ -651,18 +726,18 @@ const DataSync: React.FC = () => {
             )}
             {/* 固定值配置 */}
             {f.transformer === 'static' && (
-              <div style={{ marginLeft: 30, marginTop: 4 }}>
+              <div style={{ marginLeft: isMobile ? 8 : 30, marginTop: 4 }}>
                 <Input size="small" style={{ width: 200 }} placeholder="固定值"
                   value={f.staticValue} onChange={e => updateField(f.key, { staticValue: e.target.value })} />
               </div>
             )}
             {/* 自定义函数 */}
             {f.transformer === 'custom' && (
-              <div style={{ marginLeft: 30, marginTop: 4 }}>
+              <div style={{ marginLeft: isMobile ? 8 : 30, marginTop: 4 }}>
                 <Input.TextArea
                   size="small"
                   rows={3}
-                  style={{ fontFamily: 'monospace', fontSize: 12, width: 400 }}
+                  style={{ fontFamily: 'monospace', fontSize: 12, width: '100%', maxWidth: isMobile ? '100%' : 400 }}
                   value={f.customCode}
                   onChange={e => updateField(f.key, { customCode: e.target.value })}
                   placeholder={defaultCustomCode}
@@ -688,12 +763,12 @@ const DataSync: React.FC = () => {
               <Tag>预览: {previewData.previewCount} 条</Tag>
             </Space>
             <Row gutter={16}>
-              <Col span={12}>
+              <Col xs={24} md={12} style={{ marginBottom: isMobile ? 12 : 0 }}>
                 <Card size="small" title="源数据（原始）" type="inner">
                   <JsonTreeViewer data={previewData.sourceRecords} defaultExpanded={false} maxHeight={400} />
                 </Card>
               </Col>
-              <Col span={12}>
+              <Col xs={24} md={12}>
                 <Card size="small" title="转换后（将写入目标表）" type="inner">
                   <JsonTreeViewer data={previewData.transformedRecords} defaultExpanded={false} maxHeight={400} />
                 </Card>

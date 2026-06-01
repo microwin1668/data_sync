@@ -238,6 +238,7 @@ const TableConfig: React.FC = () => {
         </div>
         <Table dataSource={tables} columns={columns} rowKey="id"
           loading={loading} pagination={false} size="small"
+          scroll={{ x: 'max-content' }}
           rowSelection={{
             selectedRowKeys: selectedKeys,
             onChange: (keys: React.Key[]) => setSelectedKeys(keys as number[]),

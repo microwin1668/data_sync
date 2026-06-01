@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
-import { ConfigProvider, Layout, Menu, theme } from 'antd';
-import { KeyOutlined, EyeOutlined, TableOutlined, SwapOutlined, ClockCircleOutlined, CloudServerOutlined, UserOutlined, LogoutOutlined } from '@ant-design/icons';
+import { ConfigProvider, Layout, Menu, theme, Drawer, Button } from 'antd';
+import { KeyOutlined, EyeOutlined, TableOutlined, SwapOutlined, ClockCircleOutlined, CloudServerOutlined, UserOutlined, LogoutOutlined, MenuOutlined } from '@ant-design/icons';
 import TokenConfig from './pages/TokenConfig';
 import DataPreview from './pages/DataPreview';
 import BackupConfig from './pages/BackupConfig';
@@ -25,6 +25,16 @@ const App: React.FC = () => {
   const [activeKey, setActiveKey] = useState('token');
   const [serverTime, setServerTime] = useState<string>('');
   const [loggingOut, setLoggingOut] = useState(false);
+  const [isMobile, setIsMobile] = useState(window.innerWidth < 768);
+  const [drawerOpen, setDrawerOpen] = useState(false);
+
+  useEffect(() => {
+    const handleResize = () => {
+      setIsMobile(window.innerWidth < 768);
+    };
+    window.addEventListener('resize', handleResize);
+    return () => window.removeEventListener('resize', handleResize);
+  }, []);
 
   useEffect(() => {
     fetch('/api/auth/check')
@@ -44,6 +54,7 @@ const App: React.FC = () => {
     } catch {}
     setAuthenticated(false);
     setLoggingOut(false);
+    setDrawerOpen(false);
   };
 
   useEffect(() => {
@@ -87,29 +98,82 @@ const App: React.FC = () => {
       theme={{ algorithm: theme.defaultAlgorithm, token: { colorPrimary: '#1677ff' } }}
     >
       <Layout style={{ minHeight: '100vh' }}>
-        <Header style={{ display: 'flex', alignItems: 'center', padding: '0 24px' }}>
-          <div style={{ color: '#fff', fontSize: 18, fontWeight: 'bold', marginRight: 40, whiteSpace: 'nowrap' }}>
-            🚀 数据同步
+        <Header style={{ display: 'flex', alignItems: 'center', padding: isMobile ? '0 16px' : '0 24px', justifyContent: 'space-between' }}>
+          <div style={{ display: 'flex', alignItems: 'center' }}>
+            {isMobile && (
+              <Button
+                type="text"
+                icon={<MenuOutlined style={{ color: '#fff', fontSize: 20 }} />}
+                onClick={() => setDrawerOpen(true)}
+                style={{ marginRight: 12, padding: 0 }}
+              />
+            )}
+            <div style={{ color: '#fff', fontSize: isMobile ? 16 : 18, fontWeight: 'bold', marginRight: isMobile ? 0 : 40, whiteSpace: 'nowrap' }}>
+              🚀 数据同步
+            </div>
+          </div>
+
+          {!isMobile && (
+            <>
+              <Menu
+                theme="dark" mode="horizontal" selectedKeys={[activeKey]}
+                items={menuItems}
+                onClick={({ key }) => setActiveKey(key)}
+                style={{ flex: 1, minWidth: 0 }}
+              />
+              <div style={{ color: 'rgba(255,255,255,0.65)', fontSize: 13, whiteSpace: 'nowrap', marginLeft: 16 }}>
+                {serverTime}
+              </div>
+              <div style={{ color: 'rgba(255,255,255,0.85)', fontSize: 13, display: 'flex', alignItems: 'center', gap: 8, marginLeft: 16, borderLeft: '1px solid rgba(255,255,255,0.2)', paddingLeft: 16 }}>
+                <UserOutlined />
+                <span>admin</span>
+                <a style={{ color: 'rgba(255,255,255,0.65)', marginLeft: 8, cursor: 'pointer', textDecoration: 'none' }}
+                   onClick={handleLogout}>
+                  <LogoutOutlined /> {loggingOut ? '退出中...' : '退出'}
+                </a>
+              </div>
+            </>
+          )}
+
+          {isMobile && (
+            <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+              <div style={{ color: 'rgba(255,255,255,0.65)', fontSize: 11 }}>
+                {serverTime ? serverTime.split(' ')[1] : ''}
+              </div>
+              <a style={{ color: 'rgba(255,255,255,0.85)', cursor: 'pointer', fontSize: 18, display: 'flex', alignItems: 'center' }}
+                 onClick={handleLogout}
+                 title="退出登录">
+                <LogoutOutlined />
+              </a>
+            </div>
+          )}
+        </Header>
+
+        <Drawer
+          title="导航菜单"
+          placement="left"
+          onClose={() => setDrawerOpen(false)}
+          open={drawerOpen}
+          styles={{ body: { padding: 0 } }}
+          width={240}
+        >
+          <div style={{ padding: '16px', background: '#fafafa', borderBottom: '1px solid #f0f0f0', display: 'flex', alignItems: 'center', gap: 8 }}>
+            <UserOutlined style={{ fontSize: 16, color: '#1677ff' }} />
+            <span style={{ fontWeight: 500 }}>当前用户: admin</span>
           </div>
           <Menu
-            theme="dark" mode="horizontal" selectedKeys={[activeKey]}
+            mode="inline"
+            selectedKeys={[activeKey]}
             items={menuItems}
-            onClick={({ key }) => setActiveKey(key)}
-            style={{ flex: 1, minWidth: 0 }}
+            onClick={({ key }) => {
+              setActiveKey(key);
+              setDrawerOpen(false);
+            }}
+            style={{ borderRight: 0 }}
           />
-          <div style={{ color: 'rgba(255,255,255,0.65)', fontSize: 13, whiteSpace: 'nowrap', marginLeft: 16 }}>
-            {serverTime}
-          </div>
-          <div style={{ color: 'rgba(255,255,255,0.85)', fontSize: 13, display: 'flex', alignItems: 'center', gap: 8, marginLeft: 16, borderLeft: '1px solid rgba(255,255,255,0.2)', paddingLeft: 16 }}>
-            <UserOutlined />
-            <span>admin</span>
-            <a style={{ color: 'rgba(255,255,255,0.65)', marginLeft: 8, cursor: 'pointer', textDecoration: 'none' }}
-               onClick={handleLogout}>
-              <LogoutOutlined /> {loggingOut ? '退出中...' : '退出'}
-            </a>
-          </div>
-        </Header>
-        <Content>{renderPage()}</Content>
+        </Drawer>
+
+        <Content style={{ overflowX: 'hidden' }}>{renderPage()}</Content>
         <Footer style={{ textAlign: 'center', padding: '12px 24px', color: 'rgba(0,0,0,0.35)', fontSize: 12 }}>
           数据同步平台 v{__APP_VERSION__}
         </Footer>
