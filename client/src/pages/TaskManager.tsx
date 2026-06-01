@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import {
   Card, Table, Button, Space, Modal, Form, Input, Select, message, Popconfirm, Tag, Typography, InputNumber,
-  Switch, Badge, Progress, Tooltip, Row, Col,
+  Switch, Badge, Progress, Tooltip, Row, Col, Spin, Checkbox,
 } from 'antd';
 import {
   PlusOutlined, EditOutlined, DeleteOutlined, PlayCircleOutlined, ClockCircleOutlined,
@@ -668,21 +668,181 @@ const TaskManager: React.FC = () => {
       {/* 执行日志弹窗 */}
       <Modal title={<>执行日志 {logTaskId && <Text type="secondary">(任务 #{logTaskId})</Text>}</>}
         open={logOpen} onCancel={() => { setLogSelectedKeys([]); closeLogs(); }} footer={null}
-        width="90%" style={{ top: 20 }}>
-        <div style={{ marginBottom: 12, display: 'flex', gap: 8, alignItems: 'center' }}>
-          {logSelectedKeys.length > 0 && (
-            <Button danger icon={<DeleteOutlined />} onClick={handleBatchDeleteLog}>
-              批量删除日志 ({logSelectedKeys.length})
-            </Button>
-          )}
-        </div>
-        <Table dataSource={execLogs} columns={logColumns} rowKey="id"
-          loading={logLoading} pagination={false} size="small"
-          scroll={{ x: 'max-content' }}
-          rowSelection={{
-            selectedRowKeys: logSelectedKeys,
-            onChange: (keys: React.Key[]) => setLogSelectedKeys(keys as number[]),
-          }} />
+        width={isMobile ? "96%" : "90%"} style={{ top: 20 }}>
+        {isMobile ? (
+          <div>
+            <div style={{ marginBottom: 12, display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 8 }}>
+              <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                <Checkbox
+                  checked={execLogs.length > 0 && logSelectedKeys.length === execLogs.length}
+                  indeterminate={logSelectedKeys.length > 0 && logSelectedKeys.length < execLogs.length}
+                  onChange={(e) => {
+                    if (e.target.checked) {
+                      setLogSelectedKeys(execLogs.map(log => log.id));
+                    } else {
+                      setLogSelectedKeys([]);
+                    }
+                  }}
+                >
+                  全选
+                </Checkbox>
+                {logSelectedKeys.length > 0 && (
+                  <Button size="small" danger icon={<DeleteOutlined />} onClick={handleBatchDeleteLog}>
+                    批量删除 ({logSelectedKeys.length})
+                  </Button>
+                )}
+              </div>
+            </div>
+            <div style={{ maxHeight: '60vh', overflowY: 'auto', paddingRight: 4 }}>
+              {logLoading && <div style={{ textAlign: 'center', padding: 20 }}><Spin /></div>}
+              {!logLoading && execLogs.length === 0 && <div style={{ textAlign: 'center', padding: 20, color: '#999' }}>暂无日志</div>}
+              {!logLoading && execLogs.map(r => {
+                const renderStatus = () => {
+                  const v = r.status;
+                  if (v === 'running') return <Badge status="processing" text="执行中" />;
+                  if (v === 'success') return <Badge status="success" text="成功" />;
+                  if (v === 'error' && r.error_message && r.error_message.includes('手动停止')) {
+                    return <Badge status="warning" text="终止备份" />;
+                  }
+                  if (v === 'error') return <Badge status="error" text="失败" />;
+                  if (v === 'cancelled') return <Badge status="warning" text="已取消" />;
+                  return <Badge status="processing" text="执行中" />;
+                };
+
+                const renderProgress = () => {
+                  if (r.status === 'running') {
+                    const pct = r.error_count || 0;
+                    const done = r.success_count || 0;
+                    const total = r.total_records || 0;
+                    const isBackup = r.task_type === 'backup';
+                    const label = isBackup ? `表 ${done}/${total} (${pct}%)` : (total > 0 ? `${done} / ${total}` : `${pct}%`);
+                    return (
+                      <Space size="small">
+                        <Progress percent={pct} size="small" status="active" style={{ width: 100 }} format={() => label} />
+                        <Button type="text" size="small" danger icon={<CloseCircleOutlined />}
+                          loading={stoppingId === (r.sync_config_id || 0)}
+                          onClick={() => handleStopBackup(r.sync_config_id || 0)} />
+                      </Space>
+                    );
+                  }
+                  if (r.status === 'success') {
+                    if (r.task_type === 'backup') return <Text type="success">完成</Text>;
+                    const succ = r.success_count || 0;
+                    const fail = r.error_count || 0;
+                    if (succ > 0 || fail > 0) {
+                      return <Text><Text type="success">{succ}</Text> / <Text type="danger">{fail}</Text></Text>;
+                    }
+                    return <Text type="success">完成</Text>;
+                  }
+                  if (r.status === 'error') {
+                    if (r.error_message && r.error_message.includes('手动停止')) {
+                      return <Tag color="orange" style={{ margin: 0 }}>终止备份</Tag>;
+                    }
+                    if (r.task_type === 'backup') return <Badge status="error" text="失败" />;
+                    const succ = r.success_count || 0;
+                    const fail = r.error_count || 0;
+                    if (succ > 0 || fail > 0) {
+                      return <Text><Text type="success">{succ}</Text> / <Text type="danger">{fail}</Text></Text>;
+                    }
+                    return <Badge status="error" text="失败" />;
+                  }
+                  return '-';
+                };
+
+                const renderBackupFile = () => {
+                  if (!r.backup_file) return null;
+                  const files = r.backup_file.split(',').map((f: string) => f.trim()).filter(Boolean);
+                  return (
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 4, flexWrap: 'wrap' }}>
+                      <Text type="secondary">备份文件:</Text>
+                      {files.map((f, i) => (
+                        <Tooltip key={i} title={f} placement="top">
+                          <Button type="link" size="small" icon={<DownloadOutlined />} style={{ padding: '0 4px' }}
+                            href={'/api/backup-logs/by-file/' + encodeURIComponent(f)}
+                            target="_blank" />
+                        </Tooltip>
+                      ))}
+                    </div>
+                  );
+                };
+
+                const isChecked = logSelectedKeys.includes(r.id);
+
+                return (
+                  <Card
+                    key={r.id}
+                    size="small"
+                    style={{ marginBottom: 10, borderRadius: 6, border: '1px solid #f0f0f0' }}
+                    bodyStyle={{ padding: 10 }}
+                  >
+                    <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', marginBottom: 6 }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                        <Checkbox
+                          checked={isChecked}
+                          onChange={(e) => {
+                            if (e.target.checked) {
+                              setLogSelectedKeys([...logSelectedKeys, r.id]);
+                            } else {
+                              setLogSelectedKeys(logSelectedKeys.filter(k => k !== r.id));
+                            }
+                          }}
+                        />
+                        {renderStatus()}
+                      </div>
+                      <span style={{ fontSize: 12, fontWeight: 500, color: '#333', maxWidth: '60%', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                        {r.sync_config_name || '-'}
+                      </span>
+                    </div>
+
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 4, fontSize: 12, color: '#666' }}>
+                      <div>
+                        <Text type="secondary">目标表:</Text> {r.target_table || '-'}
+                      </div>
+                      {r.error_message && (r.status === 'running' || (r.status === 'error' && !r.log_filename)) && (
+                        <div style={{ background: '#fff2f0', border: '1px solid #ffccc7', padding: '4px 8px', borderRadius: 4, fontSize: 11, color: '#ff4d4f', wordBreak: 'break-all' }}>
+                          {r.error_message}
+                        </div>
+                      )}
+                      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                        <div>
+                          <Text type="secondary">进度/结果:</Text> {renderProgress()}
+                        </div>
+                        {r.log_filename && (
+                          <Button size="small" type="primary" ghost icon={<DownloadOutlined />} style={{ height: 22, fontSize: 11, display: 'flex', alignItems: 'center', gap: 2 }}
+                            href={'/api/logs/' + r.log_filename} target="_blank">
+                            下载失败日志
+                          </Button>
+                        )}
+                      </div>
+                      {logTaskType === 'backup' && renderBackupFile()}
+                      <div style={{ fontSize: 11, color: '#999', marginTop: 4 }}>
+                        <div>开始: {r.started_at || '-'}</div>
+                        {r.finished_at && <div>结束: {r.finished_at}</div>}
+                      </div>
+                    </div>
+                  </Card>
+                );
+              })}
+            </div>
+          </div>
+        ) : (
+          <>
+            <div style={{ marginBottom: 12, display: 'flex', gap: 8, alignItems: 'center' }}>
+              {logSelectedKeys.length > 0 && (
+                <Button danger icon={<DeleteOutlined />} onClick={handleBatchDeleteLog}>
+                  批量删除日志 ({logSelectedKeys.length})
+                </Button>
+              )}
+            </div>
+            <Table dataSource={execLogs} columns={logColumns} rowKey="id"
+              loading={logLoading} pagination={false} size="small"
+              scroll={{ x: 'max-content' }}
+              rowSelection={{
+                selectedRowKeys: logSelectedKeys,
+                onChange: (keys: React.Key[]) => setLogSelectedKeys(keys as number[]),
+              }} />
+          </>
+        )}
       </Modal>
     </div>
   );

@@ -153,36 +153,51 @@ const DataSync: React.FC = () => {
     setEditPreviewData(null);  };
 
   const openEdit = async (cfg: SyncConfig) => {
-    setEditingId(cfg.id);
-    form.setFieldsValue({
-      name: cfg.name, remote_table_id: cfg.remote_table_id, pg_source_id: cfg.pg_source_id,
-      target_table: cfg.target_table, page: cfg.page, per_page: cfg.per_page,
-    });
-    setEditQuery(prev => ({ ...prev, perPage: cfg.per_page || 200 }));
-    await onSelectPgSource(cfg.pg_source_id);
-    await onSelectTargetTable(cfg.target_table);
-    await onSelectRemoteTable(cfg.remote_table_id);
     try {
-      const ms = JSON.parse(cfg.import_settings || '[]');
-      setFields(ms.length > 0 ? ms.map((m: any) => ({
-        key: genKey(), srcField: m.srcField || '', distField: m.distField || '',
-        type: m.type || 'string', isPk: m.isPk || false,
-        transformer: m.transformer?.methods || 'none',
-        mappingValues: m.transformer?.mapping
-          ? Object.entries(m.transformer.mapping).map(([from, to]) => ({ key: genKey(), fromValue: from, toValue: to as string }))
-          : [{ key: genKey(), fromValue: '', toValue: '' }],
-        staticValue: m.transformer?.value || '',
-        customCode: m.transformer?.customCode || defaultCustomCode,
-      })) : [newField()]);
-    } catch { setFields([newField()]); }
-    setEditPreviewData(null);    setEditQuery({
-      conditions: JSON.parse(cfg.conditions || "[]") as QueryCondition[],
-      logic: (cfg.logic as "and" | "or") || "and",
-      page: cfg.page || 1,
-      perPage: cfg.per_page || 200,
-      orderField: cfg.order_field || "",
-      orderDir: (cfg.order_dir as "asc" | "desc") || "asc",
-    });    setEditOpen(true);
+      setEditingId(cfg.id);
+      form.setFieldsValue({
+        name: cfg.name, remote_table_id: cfg.remote_table_id, pg_source_id: cfg.pg_source_id,
+        target_table: cfg.target_table, page: cfg.page, per_page: cfg.per_page,
+      });
+      setEditQuery(prev => ({ ...prev, perPage: cfg.per_page || 200 }));
+      await onSelectPgSource(cfg.pg_source_id);
+      await onSelectTargetTable(cfg.target_table);
+      await onSelectRemoteTable(cfg.remote_table_id);
+      try {
+        const ms = JSON.parse(cfg.import_settings || '[]');
+        if (Array.isArray(ms) && ms.length > 0) {
+          setFields(ms.map((m: any) => ({
+            key: genKey(), srcField: m.srcField || '', distField: m.distField || '',
+            type: m.type || 'string', isPk: m.isPk || false,
+            transformer: m.transformer?.methods || 'none',
+            mappingValues: m.transformer?.mapping
+              ? Object.entries(m.transformer.mapping).map(([from, to]) => ({ key: genKey(), fromValue: from, toValue: to as string }))
+              : [{ key: genKey(), fromValue: '', toValue: '' }],
+            staticValue: m.transformer?.value || '',
+            customCode: m.transformer?.customCode || defaultCustomCode,
+          })));
+        } else {
+          setFields([newField()]);
+        }
+      } catch { setFields([newField()]); }
+      setEditPreviewData(null);    
+      let parsedConditions: QueryCondition[] = [];
+      try { 
+        const pc = JSON.parse(cfg.conditions || '[]'); 
+        if (Array.isArray(pc)) parsedConditions = pc;
+      } catch {}
+      setEditQuery({
+        conditions: parsedConditions,
+        logic: (cfg.logic as "and" | "or") || "and",
+        page: cfg.page || 1,
+        perPage: cfg.per_page || 200,
+        orderField: cfg.order_field || "",
+        orderDir: (cfg.order_dir as "asc" | "desc") || "asc",
+      });    
+      setEditOpen(true);
+    } catch (e: any) {
+      message.error("打开编辑失败: " + e.message);
+    }
   };
 
   const addField = () => setFields(prev => [...prev, newField()]);

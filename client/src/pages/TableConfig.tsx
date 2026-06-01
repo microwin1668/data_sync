@@ -69,17 +69,26 @@ const TableConfig: React.FC = () => {
   };
 
   const openEdit = (t: RemoteTable) => {
-    setEditingId(t.id);
-    editForm.setFieldsValue({ name: t.name, data_api_url: t.data_api_url });
-    setEditQuery({
-      conditions: JSON.parse(t.conditions || '[]') as QueryCondition[],
-      logic: (t.logic as 'and' | 'or') || 'and',
-      page: t.page || 1,
-      perPage: t.per_page || 20,
-      orderField: t.order_field || '',
-      orderDir: (t.order_dir as 'asc' | 'desc') || 'asc',
-    });
-    setEditOpen(true);
+    try {
+      setEditingId(t.id);
+      editForm.setFieldsValue({ name: t.name, data_api_url: t.data_api_url });
+      let parsedConditions: QueryCondition[] = [];
+      try { 
+        const pc = JSON.parse(t.conditions || '[]'); 
+        if (Array.isArray(pc)) parsedConditions = pc;
+      } catch {}
+      setEditQuery({
+        conditions: parsedConditions,
+        logic: (t.logic as 'and' | 'or') || 'and',
+        page: t.page || 1,
+        perPage: t.per_page || 20,
+        orderField: t.order_field || '',
+        orderDir: (t.order_dir as 'asc' | 'desc') || 'asc',
+      });
+      setEditOpen(true);
+    } catch (e: any) {
+      message.error("打开编辑失败: " + e.message);
+    }
   };
 
   const handleSave = async () => {
@@ -140,21 +149,30 @@ const TableConfig: React.FC = () => {
   // ========== 预览弹窗 ==========
 
   const openPreview = (t: RemoteTable) => {
-    setPreviewTable(t);
-    const q: QueryParams = {
-      conditions: JSON.parse(t.conditions || '[]') as QueryCondition[],
-      logic: (t.logic as 'and' | 'or') || 'and',
-      page: t.page || 1,
-      perPage: t.per_page || 20,
-      orderField: t.order_field || '',
-      orderDir: (t.order_dir as 'asc' | 'desc') || 'asc',
-    };
-    setPreviewQuery(q);
-    setPreviewRecords(null);
-    setPreviewRaw(null);
-    setPreviewMeta(null);
-    setPreviewFields({});
-    setPreviewOpen(true);
+    try {
+      setPreviewTable(t);
+      let parsedConditions: QueryCondition[] = [];
+      try { 
+        const pc = JSON.parse(t.conditions || '[]'); 
+        if (Array.isArray(pc)) parsedConditions = pc;
+      } catch {}
+      const q: QueryParams = {
+        conditions: parsedConditions,
+        logic: (t.logic as 'and' | 'or') || 'and',
+        page: t.page || 1,
+        perPage: t.per_page || 20,
+        orderField: t.order_field || '',
+        orderDir: (t.order_dir as 'asc' | 'desc') || 'asc',
+      };
+      setPreviewQuery(q);
+      setPreviewRecords(null);
+      setPreviewRaw(null);
+      setPreviewMeta(null);
+      setPreviewFields({});
+      setPreviewOpen(true);
+    } catch (e: any) {
+      message.error("打开预览失败: " + e.message);
+    }
   };
 
   const handlePreviewFetch = async () => {
