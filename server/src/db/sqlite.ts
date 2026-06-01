@@ -137,6 +137,7 @@ export async function initDb(): Promise<SqlJsDatabase> {
   tryMigrateTable("task_execution_logs", [
     { name: "task_type", def: "TEXT DEFAULT 'sync'" },
     { name: "backup_file", def: "TEXT DEFAULT ''" },
+    { name: "file_size", def: "INTEGER DEFAULT 0" },
   ]);
 
   tryMigrateTable("sync_tasks", [
@@ -164,6 +165,7 @@ export async function initDb(): Promise<SqlJsDatabase> {
     "log_filename TEXT DEFAULT ''," +
     "error_message TEXT DEFAULT ''," +
     "backup_file TEXT DEFAULT ''," +
+    "file_size INTEGER DEFAULT 0," +
     "started_at TEXT DEFAULT ''," +
     "finished_at TEXT DEFAULT ''," +
     "created_at TEXT DEFAULT (datetime('now','localtime'))" +
@@ -771,6 +773,7 @@ export interface TaskExecutionLog {
   log_filename: string;
   error_message: string;
   backup_file: string;
+  file_size: number;
   started_at: string;
   finished_at: string;
   created_at: string;
@@ -798,6 +801,7 @@ function rowToExecLog(row: any[], columns: string[]): TaskExecutionLog {
     log_filename: String(get('log_filename')),
     error_message: String(get('error_message')),
     backup_file: String(get('backup_file')),
+    file_size: Number(get('file_size')) || 0,
     started_at: String(get('started_at')),
     finished_at: String(get('finished_at')),
     created_at: String(get('created_at')),
@@ -831,7 +835,7 @@ export async function createTaskExecutionLog(log: {
 
 export async function updateTaskExecutionLog(id: number, updates: {
   status?: string; total_records?: number; success_count?: number; error_count?: number;
-  log_filename?: string; error_message?: string; backup_file?: string;
+  log_filename?: string; error_message?: string; backup_file?: string; file_size?: number;
 }): Promise<void> {
   await initDb();
   const sets: string[] = ["finished_at=datetime('now','localtime')"];
@@ -843,6 +847,7 @@ export async function updateTaskExecutionLog(id: number, updates: {
   if (updates.log_filename !== undefined) { sets.push('log_filename=?'); params.push(updates.log_filename); }
   if (updates.backup_file !== undefined) { sets.push('backup_file=?'); params.push(updates.backup_file); }
   if (updates.error_message !== undefined) { sets.push('error_message=?'); params.push(updates.error_message); }
+  if (updates.file_size !== undefined) { sets.push('file_size=?'); params.push(updates.file_size); }
   params.push(id);
   db.run("UPDATE task_execution_logs SET " + sets.join(',') + " WHERE id=?", params);
   saveDb();

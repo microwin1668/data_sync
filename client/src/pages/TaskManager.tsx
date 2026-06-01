@@ -498,7 +498,18 @@ const TaskManager: React.FC = () => {
             ))}
           </Space>
         );
-      } }] : []),
+      }
+    }, {
+      title: '文件大小', key: 'fileSize', width: 90,
+      render: (_: any, r: TaskExecutionLog) => {
+        if (r.status !== 'success') return '-';
+        if (!r.file_size) return '-';
+        const size = r.file_size;
+        if (size < 1024) return size + ' B';
+        if (size < 1024 * 1024) return (size / 1024).toFixed(2) + ' KB';
+        return (size / (1024 * 1024)).toFixed(2) + ' MB';
+      }
+    }] : []),
     { title: '开始时间', dataIndex: 'started_at', key: 'started', width: 140, responsive: ['sm'] as any },
     { title: '完成时间', dataIndex: 'finished_at', key: 'finished', width: 140, responsive: ['md'] as any },
   ];
@@ -815,6 +826,17 @@ const TaskManager: React.FC = () => {
                         )}
                       </div>
                       {logTaskType === 'backup' && renderBackupFile()}
+                      {logTaskType === 'backup' && r.status === 'success' && r.file_size ? (
+                        <div>
+                          <Text type="secondary">文件大小:</Text> {
+                            r.file_size < 1024
+                              ? r.file_size + ' B'
+                              : r.file_size < 1024 * 1024
+                                ? (r.file_size / 1024).toFixed(2) + ' KB'
+                                : (r.file_size / (1024 * 1024)).toFixed(2) + ' MB'
+                          }
+                        </div>
+                      ) : null}
                       <div style={{ fontSize: 11, color: '#999', marginTop: 4 }}>
                         <div>开始: {r.started_at || '-'}</div>
                         {r.finished_at && <div>结束: {r.finished_at}</div>}

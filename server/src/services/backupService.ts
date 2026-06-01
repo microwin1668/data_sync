@@ -69,6 +69,7 @@ export function startBackupProgressMonitor(configId: number, logId: number) {
           success_count: prog.doneTables || 0,
           error_message: prog.message,
           backup_file: prog.filename || '',
+          file_size: prog.fileSize || 0,
         });
         clearInterval(timer);
         progressMonitors.delete(logId);
@@ -157,6 +158,7 @@ const backupProgressMap = new Map<number, {
   doneTables: number;
   filename: string;
   filepath: string;
+  fileSize?: number;
 }>();
 
 export function getBackupProgress(configId: number) {
@@ -607,7 +609,13 @@ export async function runBackup(cfg: any): Promise<void> {
 
     // 更新进度为完成
     const prog = backupProgressMap.get(progKey);
-    if (prog) { prog.status = 'success'; prog.progress = 100; prog.message = `备份完成: ${fileList}`; prog.filename = fileList; }
+    if (prog) {
+      prog.status = 'success';
+      prog.progress = 100;
+      prog.message = `备份完成: ${fileList}`;
+      prog.filename = fileList;
+      prog.fileSize = totalSize;
+    }
 
     // 清理旧备份
     if (cfg.keep_days > 0) {

@@ -346,6 +346,7 @@ export interface TaskExecutionLog {
   log_filename: string;
   error_message: string;
   backup_file: string;
+  file_size?: number;
   started_at: string;
   finished_at: string;
   created_at: string;
