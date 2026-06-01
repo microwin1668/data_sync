@@ -503,7 +503,7 @@ const TaskManager: React.FC = () => {
       title: '文件大小', key: 'fileSize', width: 90,
       render: (_: any, r: TaskExecutionLog) => {
         if (r.status !== 'success') return '-';
-        if (!r.file_size) return '-';
+        if (r.file_size === undefined || r.file_size === null) return '-';
         const size = r.file_size;
         if (size < 1024) return size + ' B';
         if (size < 1024 * 1024) return (size / 1024).toFixed(2) + ' KB';
@@ -825,8 +825,8 @@ const TaskManager: React.FC = () => {
                           </Button>
                         )}
                       </div>
-                      {logTaskType === 'backup' && renderBackupFile()}
-                      {logTaskType === 'backup' && r.status === 'success' && r.file_size ? (
+                      {r.task_type === 'backup' && renderBackupFile()}
+                      {r.task_type === 'backup' && r.status === 'success' && r.file_size !== undefined && r.file_size !== null ? (
                         <div>
                           <Text type="secondary">文件大小:</Text> {
                             r.file_size < 1024
