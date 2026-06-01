@@ -22,7 +22,7 @@ const menuItems = [
 
 const App: React.FC = () => {
   const [authenticated, setAuthenticated] = useState<boolean | null>(null);
-  const [activeKey, setActiveKey] = useState('token');
+  const [activeKey, setActiveKey] = useState('task');
   const [serverTime, setServerTime] = useState<string>('');
   const [loggingOut, setLoggingOut] = useState(false);
   const [isMobile, setIsMobile] = useState(window.innerWidth < 768);
