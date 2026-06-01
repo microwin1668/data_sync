@@ -20,6 +20,14 @@ const BackupPage: React.FC = () => {
   const [configs, setConfigs] = useState<BackupConfig[]>([]);
   const [pgSources, setPgSources] = useState<PgDatasource[]>([]);
   const [loading, setLoading] = useState(false);
+  const [isMobile, setIsMobile] = useState(window.innerWidth < 768);
+
+  useEffect(() => {
+    const handleResize = () => setIsMobile(window.innerWidth < 768);
+    window.addEventListener('resize', handleResize);
+    return () => window.removeEventListener('resize', handleResize);
+  }, []);
+
   const [editOpen, setEditOpen] = useState(false);
   const [editingId, setEditingId] = useState<number | null>(null);
   const [form] = Form.useForm();
@@ -323,7 +331,7 @@ const BackupPage: React.FC = () => {
       },
     },
     {
-      title: '操作', key: 'action', width: 80,
+      title: '操作', key: 'action', width: 80, className: 'table-action-column',
       render: (_: any, r: BackupLog) => r.status === 'running' ? (
         <Button size="small" danger icon={<StopOutlined />}
           loading={stoppingId === logConfigId}
@@ -348,28 +356,28 @@ const BackupPage: React.FC = () => {
           </Space>
         );
       } },
-    { title: '大小', dataIndex: 'file_size', key: 'size', width: 80,
+    { title: '大小', dataIndex: 'file_size', key: 'size', width: 80, responsive: ['sm'] as any,
       render: (v: number) => v ? (v / 1024).toFixed(1) + ' KB' : '-' },
-    { title: '开始时间', dataIndex: 'started_at', key: 'start', width: 150 },
-    { title: '结束时间', dataIndex: 'finished_at', key: 'end', width: 150 },
+    { title: '开始时间', dataIndex: 'started_at', key: 'start', width: 150, responsive: ['sm'] as any },
+    { title: '结束时间', dataIndex: 'finished_at', key: 'end', width: 150, responsive: ['md'] as any },
   ];
 
   const columns = [
     { title: '名称', dataIndex: 'name', key: 'name', width: 140 },
-    { title: '数据源', dataIndex: 'pg_source_id', key: 'source', width: 120,
+    { title: '数据源', dataIndex: 'pg_source_id', key: 'source', width: 120, responsive: ['sm'] as any,
       render: (v: number) => <Tag color="blue">{sourceMap[v]?.name || '#' + v}</Tag> },
-    { title: '数据库', dataIndex: 'database_name', key: 'db', width: 120,
+    { title: '数据库', dataIndex: 'database_name', key: 'db', width: 120, responsive: ['md'] as any,
       render: (v: string, r: BackupConfig) => v || sourceMap[r.pg_source_id]?.database || '-' },
-    { title: '备份格式', dataIndex: 'backup_format', key: 'format', width: 130,
+    { title: '备份格式', dataIndex: 'backup_format', key: 'format', width: 130, responsive: ['md'] as any,
       render: (v: string) => <Tag color={formatColors[v] || 'blue'}>{formatLabels[v] || v}</Tag> },
-    { title: '备份目录', dataIndex: 'backup_dir', key: 'dir', width: 180, ellipsis: true,
+    { title: '备份目录', dataIndex: 'backup_dir', key: 'dir', width: 180, ellipsis: true, responsive: ['lg'] as any,
       render: (v: string) => v || <Text type="secondary">默认 backups/</Text> },
-    { title: '保留天数', dataIndex: 'keep_days', key: 'keep', width: 70, render: (v: number) => v + ' 天' },
-    { title: '上次执行', dataIndex: 'last_run_at', key: 'last', width: 140, render: (v: string) => v || '-' },
+    { title: '保留天数', dataIndex: 'keep_days', key: 'keep', width: 70, responsive: ['sm'] as any, render: (v: number) => v + ' 天' },
+    { title: '上次执行', dataIndex: 'last_run_at', key: 'last', width: 140, responsive: ['sm'] as any, render: (v: string) => v || '-' },
     { title: '状态', dataIndex: 'enabled', key: 'enabled', width: 60,
       render: (v: number) => <Badge status={v ? 'success' : 'default'} text={v ? '启用' : '禁用'} /> },
     {
-      title: '操作', key: 'action', width: 260,
+      title: '操作', key: 'action', width: 260, className: 'table-action-column',
       render: (_: any, r: BackupConfig) => (
         <Space>
           <Button size="small" type="primary" icon={<PlayCircleOutlined />}
@@ -385,7 +393,7 @@ const BackupPage: React.FC = () => {
   ];
 
   return (
-    <div style={{ margin: 24 }}>
+    <div className="responsive-page-container">
       {/* pg_dump 状态 - 紧凑提示条 */}
       {pgDumpStatus && (
         <div style={{
@@ -426,22 +434,67 @@ const BackupPage: React.FC = () => {
       <Card title={<><CloudServerOutlined /> 数据库备份配置</>}>
         <div style={{ marginBottom: 16, padding: '6px 12px', borderRadius: 4, background: '#e6f7ff', border: '1px solid #91d5ff', fontSize: 12, color: '#1890ff', display: 'flex', alignItems: 'center', gap: 6 }}>
           <InfoCircleOutlined />
-          <span>定时调度请到「<a href="/?page=taskManager" target="_blank">任务管理</a>」创建「数据库备份」类型任务</span>
+          <span>定时调度请到「<a href="/?page=taskManager" target="_blank">任务管理</a>」创建任务</span>
         </div>
-        <div style={{ marginBottom: 16, display: 'flex', gap: 8, alignItems: 'center' }}>
-          <Button type="primary" icon={<PlusOutlined />} onClick={openAdd} style={{ marginBottom: 16 }}>新增备份配置</Button>
-          {selectedKeys.length > 0 && (
-            <Button danger icon={<DeleteOutlined />} onClick={handleBatchDelete}>
-              批量删除 ({selectedKeys.length})
-            </Button>
-          )}
-        </div>
-        <Table dataSource={configs} columns={columns} rowKey="id" loading={loading} pagination={false} size="small"
-          scroll={{ x: 'max-content' }}
-          rowSelection={{
-            selectedRowKeys: selectedKeys,
-            onChange: (keys: React.Key[]) => setSelectedKeys(keys as number[]),
-          }} />
+        {isMobile ? (
+          <div>
+            <div style={{ marginBottom: 16 }}>
+              <Button type="primary" block icon={<PlusOutlined />} onClick={openAdd}>新增备份配置</Button>
+            </div>
+            {loading && <div style={{ textAlign: 'center', padding: 20 }}><Spin /></div>}
+            {!loading && configs.length === 0 && <div style={{ textAlign: 'center', padding: 20, color: '#999' }}>暂无配置</div>}
+            {!loading && configs.map(r => {
+              const srcName = sourceMap[r.pg_source_id]?.name || '#' + r.pg_source_id;
+              const dbName = r.database_name || sourceMap[r.pg_source_id]?.database || '-';
+              return (
+                <Card
+                  key={r.id}
+                  size="small"
+                  style={{ marginBottom: 12, borderRadius: 8, boxShadow: '0 1px 2px rgba(0,0,0,0.05)' }}
+                  title={
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                      <span style={{ fontWeight: 500 }}>{r.name}</span>
+                    </div>
+                  }
+                  extra={<Badge status={r.enabled ? 'success' : 'default'} text={r.enabled ? '启用' : '禁用'} />}
+                >
+                  <div style={{ padding: '4px 0', fontSize: 13, display: 'flex', flexDirection: 'column', gap: 4 }}>
+                    <div><Text type="secondary">数据源:</Text> <Tag color="blue">{srcName}</Tag></div>
+                    <div><Text type="secondary">数据库:</Text> <Text strong>{dbName}</Text></div>
+                    <div><Text type="secondary">备份格式:</Text> <Tag color={formatColors[r.backup_format] || 'blue'}>{formatLabels[r.backup_format] || r.backup_format}</Tag></div>
+                    <div><Text type="secondary">保留天数:</Text> {r.keep_days} 天</div>
+                    <div><Text type="secondary">上次执行:</Text> {r.last_run_at || '-'}</div>
+                  </div>
+                  <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 12, borderTop: '1px solid #f0f0f0', paddingTop: 8, flexWrap: 'wrap' }}>
+                    <Button size="small" type="primary" icon={<PlayCircleOutlined />} onClick={() => handleRun(r.id)} loading={runningId === r.id}>执行</Button>
+                    <Button size="small" icon={<HistoryOutlined />} onClick={() => showLogs(r.id)}>日志</Button>
+                    <Button size="small" icon={<EditOutlined />} onClick={() => openEdit(r)}>编辑</Button>
+                    <Popconfirm title="确定删除？" onConfirm={() => handleDelete(r.id)}>
+                      <Button size="small" danger icon={<DeleteOutlined />}>删除</Button>
+                    </Popconfirm>
+                  </div>
+                </Card>
+              );
+            })}
+          </div>
+        ) : (
+          <>
+            <div style={{ marginBottom: 16, display: 'flex', gap: 8, alignItems: 'center' }}>
+              <Button type="primary" icon={<PlusOutlined />} onClick={openAdd} style={{ marginBottom: 16 }}>新增备份配置</Button>
+              {selectedKeys.length > 0 && (
+                <Button danger icon={<DeleteOutlined />} onClick={handleBatchDelete}>
+                  批量删除 ({selectedKeys.length})
+                </Button>
+              )}
+            </div>
+            <Table dataSource={configs} columns={columns} rowKey="id" loading={loading} pagination={false} size="small"
+              scroll={{ x: 'max-content' }}
+              rowSelection={{
+                selectedRowKeys: selectedKeys,
+                onChange: (keys: React.Key[]) => setSelectedKeys(keys as number[]),
+              }} />
+          </>
+        )}
       </Card>
 
       <Modal title={editingId ? '编辑备份' : '新增备份'}

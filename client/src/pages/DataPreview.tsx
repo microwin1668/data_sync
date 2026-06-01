@@ -118,7 +118,7 @@ const DataPreview: React.FC = () => {
   };
 
   return (
-    <div style={{ margin: 24 }}>
+    <div className="responsive-page-container">
       <Card title={<><ApiOutlined /> 数据预览</>}>
         <Form form={form} layout="vertical" style={{ maxWidth: 700 }}>
           <Form.Item label="数据 API URL" name="data_api_url"

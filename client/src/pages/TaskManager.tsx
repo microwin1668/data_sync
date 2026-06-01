@@ -352,7 +352,7 @@ const TaskManager: React.FC = () => {
     },
     { title: '任务名称', dataIndex: 'name', key: 'name', width: 180 },
     {
-      title: '配置', key: 'config', width: 200, ellipsis: true,
+      title: '配置', key: 'config', width: 200, ellipsis: true, responsive: ['sm'] as any,
       render: (_: any, r: SyncTask) => {
         if (r.task_type === 'backup') {
           const bc = backupConfigMap[r.backup_config_id];
@@ -365,7 +365,7 @@ const TaskManager: React.FC = () => {
       },
     },
     {
-      title: '调度', key: 'schedule', width: 150,
+      title: '调度', key: 'schedule', width: 150, responsive: ['sm'] as any,
       render: (_: any, r: SyncTask) => {
         if (r.type === 'interval') return `每 ${r.interval_value} ${r.interval_unit === 'days' ? '天' : r.interval_unit === 'hours' ? '小时' : '分钟'}`;
         if (r.type === 'daily') return `每天 ${r.scheduled_time}`;
@@ -375,8 +375,8 @@ const TaskManager: React.FC = () => {
       },
     },
 
-    { title: '上次执行', dataIndex: 'last_run_at', key: 'last', width: 140, render: (v: string) => v || '-' },
-    { title: '下次执行', dataIndex: 'next_run_at', key: 'next', width: 140,
+    { title: '上次执行', dataIndex: 'last_run_at', key: 'last', width: 140, responsive: ['md'] as any, render: (v: string) => v || '-' },
+    { title: '下次执行', dataIndex: 'next_run_at', key: 'next', width: 140, responsive: ['md'] as any,
       render: (v: string) => v ? <Text type="warning">{v}</Text> : '-' },
     {
       title: '状态', dataIndex: 'enabled', key: 'enabled', width: 60,
@@ -385,7 +385,7 @@ const TaskManager: React.FC = () => {
       ),
     },
     {
-      title: '操作', key: 'action', width: 160,
+      title: '操作', key: 'action', width: 160, className: 'table-action-column',
       render: (_: any, r: SyncTask) => (
         <Space size="small">
           <Tooltip title="执行">
@@ -422,7 +422,7 @@ const TaskManager: React.FC = () => {
         if (v === 'cancelled') return <Badge status="warning" text="已取消" />;
         return <Badge status="processing" text="执行中" />;
       } },
-    { title: '配置名称', dataIndex: 'sync_config_name', key: 'cfgName', width: 140, ellipsis: true },
+    { title: '配置名称', dataIndex: 'sync_config_name', key: 'cfgName', width: 140, ellipsis: true, responsive: ['sm'] as any },
     { title: '目标', dataIndex: 'target_table', key: 'table', width: 100,
       render: (v: string, r: TaskExecutionLog) => {
         if (r.error_message && (r.status === 'running' || (r.status === 'error' && !r.log_filename))) {
@@ -477,7 +477,7 @@ const TaskManager: React.FC = () => {
         return '-';
       },
     },
-    { title: '失败日志', key: 'log', width: 100,
+    { title: '失败日志', key: 'log', width: 100, className: 'table-action-column',
       render: (_: any, r: TaskExecutionLog) => r.log_filename ? (
         <Button size="small" icon={<DownloadOutlined />}
           href={'/api/logs/' + r.log_filename} target="_blank">下载</Button>
@@ -499,21 +499,73 @@ const TaskManager: React.FC = () => {
           </Space>
         );
       } }] : []),
-    { title: '开始时间', dataIndex: 'started_at', key: 'started', width: 140 },
-    { title: '完成时间', dataIndex: 'finished_at', key: 'finished', width: 140 },
+    { title: '开始时间', dataIndex: 'started_at', key: 'started', width: 140, responsive: ['sm'] as any },
+    { title: '完成时间', dataIndex: 'finished_at', key: 'finished', width: 140, responsive: ['md'] as any },
   ];
 
   return (
-    <div style={{ margin: 24 }}>
-      <Card title={<><ClockCircleOutlined /> 任务管理</>}>
-        <div style={{ marginBottom: 16 }}>
-          <Button type="primary" icon={<PlusOutlined />} onClick={openAdd}>
-            新增定时任务
-          </Button>
-        </div>
-        <Table dataSource={tasks} columns={columns} rowKey="id" loading={loading}
-          pagination={false} size="small" scroll={{ x: 1200 }} />
-      </Card>
+    <div className="responsive-page-container">
+      {isMobile ? (
+        <Card title={<><ClockCircleOutlined /> 任务管理</>}>
+          <div style={{ marginBottom: 16 }}>
+            <Button type="primary" block icon={<PlusOutlined />} onClick={openAdd}>
+              新增定时任务
+            </Button>
+          </div>
+          {loading && <div style={{ textAlign: 'center', padding: 20 }}><Spin /></div>}
+          {!loading && tasks.length === 0 && <div style={{ textAlign: 'center', padding: 20, color: '#999' }}>暂无任务</div>}
+          {!loading && tasks.map(r => {
+            const renderType = () => r.task_type === 'backup'
+              ? <Tag icon={<DatabaseOutlined />} color="green">备份</Tag>
+              : <Tag icon={<SyncOutlined />} color="blue">同步</Tag>;
+            const renderSchedule = () => {
+              if (r.type === 'interval') return `每 ${r.interval_value} ${r.interval_unit === 'days' ? '天' : r.interval_unit === 'hours' ? '小时' : '分钟'}`;
+              if (r.type === 'daily') return `每天 ${r.scheduled_time}`;
+              if (r.type === 'weekly') return `每周 ${r.scheduled_days} ${r.scheduled_time}`;
+              if (r.type === 'once') return `单次 ${r.scheduled_time}`;
+              return '-';
+            };
+            return (
+              <Card
+                key={r.id}
+                size="small"
+                style={{ marginBottom: 12, borderRadius: 8, boxShadow: '0 1px 2px rgba(0,0,0,0.05)' }}
+                title={
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                    {renderType()}
+                    <span style={{ fontWeight: 500 }}>{r.name}</span>
+                  </div>
+                }
+                extra={<Switch checked={r.enabled === 1} onChange={checked => handleToggle(r, checked)} size="small" />}
+              >
+                <div style={{ padding: '4px 0', fontSize: 13, display: 'flex', flexDirection: 'column', gap: 4 }}>
+                  <div><Text type="secondary">调度方式:</Text> <Text strong>{renderSchedule()}</Text></div>
+                  <div><Text type="secondary">上次执行:</Text> {r.last_run_at || '-'}</div>
+                  <div><Text type="secondary">下次执行:</Text> {r.next_run_at ? <Text type="warning">{r.next_run_at}</Text> : '-'}</div>
+                </div>
+                <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 12, borderTop: '1px solid #f0f0f0', paddingTop: 8, flexWrap: 'wrap' }}>
+                  <Button size="small" type="primary" icon={<PlayCircleOutlined />} onClick={() => handleRun(r.id)} loading={running === r.id}>执行</Button>
+                  <Button size="small" icon={<HistoryOutlined />} onClick={() => showLogs(r.id)}>日志</Button>
+                  <Button size="small" icon={<EditOutlined />} onClick={() => openEdit(r)}>编辑</Button>
+                  <Popconfirm title="确定删除？" onConfirm={() => handleDelete(r.id)}>
+                    <Button size="small" danger icon={<DeleteOutlined />}>删除</Button>
+                  </Popconfirm>
+                </div>
+              </Card>
+            );
+          })}
+        </Card>
+      ) : (
+        <Card title={<><ClockCircleOutlined /> 任务管理</>}>
+          <div style={{ marginBottom: 16 }}>
+            <Button type="primary" icon={<PlusOutlined />} onClick={openAdd}>
+              新增定时任务
+            </Button>
+          </div>
+          <Table dataSource={tasks} columns={columns} rowKey="id" loading={loading}
+            pagination={false} size="small" scroll={{ x: 'max-content' }} />
+        </Card>
+      )}
 
       {/* 编辑弹窗 */}
       <Modal title={editingId ? '编辑定时任务' : '新增定时任务'}

@@ -21,6 +21,14 @@ const defaultQuery: QueryParams = {
 
 const TableConfig: React.FC = () => {
   const [tables, setTables] = useState<RemoteTable[]>([]);
+  const [isMobile, setIsMobile] = useState(window.innerWidth < 768);
+
+  useEffect(() => {
+    const handleResize = () => setIsMobile(window.innerWidth < 768);
+    window.addEventListener('resize', handleResize);
+    return () => window.removeEventListener('resize', handleResize);
+  }, []);
+
   const [loading, setLoading] = useState(false);
 
   // 新增/编辑弹窗
@@ -197,13 +205,13 @@ const TableConfig: React.FC = () => {
       render: (v: string) => <><TableOutlined style={{ marginRight: 6 }} />{v}</>,
     },
     {
-      title: '数据 API URL', dataIndex: 'data_api_url', key: 'data_api_url', ellipsis: true,
+      title: '数据 API URL', dataIndex: 'data_api_url', key: 'data_api_url', ellipsis: true, responsive: ['sm'] as any,
       render: (v: string) => (
         <Text copyable ellipsis style={{ fontSize: 12, maxWidth: 380, display: 'inline-block' }}>{v}</Text>
       ),
     },
     {
-      title: '条件', dataIndex: 'conditions', key: 'conditions', width: 80,
+      title: '条件', dataIndex: 'conditions', key: 'conditions', width: 80, responsive: ['sm'] as any,
       render: (v: string) => {
         try {
           const conds = JSON.parse(v || '[]');
@@ -212,7 +220,7 @@ const TableConfig: React.FC = () => {
       },
     },
     {
-      title: '操作', key: 'action', width: 240,
+      title: '操作', key: 'action', width: 240, className: 'table-action-column',
       render: (_: any, r: RemoteTable) => (
         <Space>
           <Button type="primary" size="small" icon={<EyeOutlined />} onClick={() => openPreview(r)}>预览</Button>
@@ -226,24 +234,64 @@ const TableConfig: React.FC = () => {
   ];
 
   return (
-    <div style={{ margin: 24 }}>
-      <Card title={<><ApiOutlined /> 数据表配置</>}>
-        <div style={{ marginBottom: 16, display: 'flex', gap: 8, alignItems: 'center' }}>
-          <Button type="primary" icon={<PlusOutlined />} onClick={openAdd}>新增表配置</Button>
-          {selectedKeys.length > 0 && (
-            <Button danger icon={<DeleteOutlined />} onClick={handleBatchDelete}>
-              批量删除 ({selectedKeys.length})
-            </Button>
-          )}
-        </div>
-        <Table dataSource={tables} columns={columns} rowKey="id"
-          loading={loading} pagination={false} size="small"
-          scroll={{ x: 'max-content' }}
-          rowSelection={{
-            selectedRowKeys: selectedKeys,
-            onChange: (keys: React.Key[]) => setSelectedKeys(keys as number[]),
-          }} />
-      </Card>
+    <div className="responsive-page-container">
+      {isMobile ? (
+        <Card title={<><ApiOutlined /> 数据表配置</>}>
+          <div style={{ marginBottom: 16 }}>
+            <Button type="primary" block icon={<PlusOutlined />} onClick={openAdd}>新增表配置</Button>
+          </div>
+          {loading && <div style={{ textAlign: 'center', padding: 20 }}><Spin /></div>}
+          {!loading && tables.length === 0 && <div style={{ textAlign: 'center', padding: 20, color: '#999' }}>暂无配置</div>}
+          {!loading && tables.map(r => {
+            let condCount = 0;
+            try { condCount = JSON.parse(r.conditions || '[]').length; } catch {}
+            return (
+              <Card
+                key={r.id}
+                size="small"
+                style={{ marginBottom: 12, borderRadius: 8, boxShadow: '0 1px 2px rgba(0,0,0,0.05)' }}
+                title={
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                    <TableOutlined style={{ color: '#1677ff' }} />
+                    <span style={{ fontWeight: 500 }}>{r.name}</span>
+                  </div>
+                }
+                extra={condCount > 0 ? <Tag color="blue">条件: {condCount}</Tag> : null}
+              >
+                <div style={{ padding: '4px 0', fontSize: 13, wordBreak: 'break-all' }}>
+                  <div style={{ marginBottom: 4 }}><Text type="secondary">API URL:</Text></div>
+                  <Text copyable style={{ fontSize: 12, color: '#555' }}>{r.data_api_url}</Text>
+                </div>
+                <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 12, borderTop: '1px solid #f0f0f0', paddingTop: 8 }}>
+                  <Button type="primary" size="small" icon={<EyeOutlined />} onClick={() => openPreview(r)}>预览</Button>
+                  <Button size="small" icon={<EditOutlined />} onClick={() => openEdit(r)}>编辑</Button>
+                  <Popconfirm title="确定删除？" onConfirm={() => handleDelete(r.id)} okText="确定" cancelText="取消">
+                    <Button size="small" danger icon={<DeleteOutlined />}>删除</Button>
+                  </Popconfirm>
+                </div>
+              </Card>
+            );
+          })}
+        </Card>
+      ) : (
+        <Card title={<><ApiOutlined /> 数据表配置</>}>
+          <div style={{ marginBottom: 16, display: 'flex', gap: 8, alignItems: 'center' }}>
+            <Button type="primary" icon={<PlusOutlined />} onClick={openAdd}>新增表配置</Button>
+            {selectedKeys.length > 0 && (
+              <Button danger icon={<DeleteOutlined />} onClick={handleBatchDelete}>
+                批量删除 ({selectedKeys.length})
+              </Button>
+            )}
+          </div>
+          <Table dataSource={tables} columns={columns} rowKey="id"
+            loading={loading} pagination={false} size="small"
+            scroll={{ x: 'max-content' }}
+            rowSelection={{
+              selectedRowKeys: selectedKeys,
+              onChange: (keys: React.Key[]) => setSelectedKeys(keys as number[]),
+            }} />
+        </Card>
+      )}
 
       {/* ======== 新增/编辑弹窗 ======== */}
       <Modal

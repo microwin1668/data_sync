@@ -383,16 +383,16 @@ const DataSync: React.FC = () => {
 
   const columns = [
     { title: '配置名', dataIndex: 'name', key: 'name', width: 140 },
-    { title: '目标表', dataIndex: 'target_table', key: 'target_table', width: 130 },
+    { title: '目标表', dataIndex: 'target_table', key: 'target_table', width: 130, responsive: ['sm'] as any },
     {
-      title: '映射', dataIndex: 'import_settings', key: 'settings', width: 70,
+      title: '映射', dataIndex: 'import_settings', key: 'settings', width: 70, responsive: ['sm'] as any,
       render: (v: string) => {
         try { return <Tag color="blue">{JSON.parse(v).length}</Tag>; }
         catch { return <Tag>-</Tag>; }
       },
     },
     {
-      title: '操作', key: 'action', width: 300,
+      title: '操作', key: 'action', width: 300, className: 'table-action-column',
       render: (_: any, r: SyncConfig) => (
         <Space>
           <Button size="small" icon={<EyeOutlined />} onClick={() => handlePreview(r.id)}>预览</Button>
@@ -408,28 +408,72 @@ const DataSync: React.FC = () => {
   ];
 
   return (
-    <div style={{ margin: 24 }}>
-      <Card title={<><SwapOutlined /> 数据导入配置</>}>
-        <div style={{ marginBottom: 16, display: 'flex', gap: 8, alignItems: 'center' }}>
-          <Button type="primary" icon={<PlusOutlined />} onClick={openAdd} style={{ marginBottom: 16 }}>新增导入配置</Button>
-          {selectedKeys.length > 0 && (
-            <Button danger icon={<DeleteOutlined />} onClick={handleBatchDelete}>
-              批量删除 ({selectedKeys.length})
-            </Button>
+    <div className="responsive-page-container">
+      {isMobile ? (
+        <Card title={<><SwapOutlined /> 数据导入配置</>}>
+          <div style={{ marginBottom: 16 }}>
+            <Button type="primary" block icon={<PlusOutlined />} onClick={openAdd}>新增导入配置</Button>
+          </div>
+          {loading && <div style={{ textAlign: 'center', padding: 20 }}><Spin /></div>}
+          {!loading && configs.length === 0 && <div style={{ textAlign: 'center', padding: 20, color: '#999' }}>暂无配置</div>}
+          {!loading && configs.map(r => {
+            let fieldCount = 0;
+            try { fieldCount = JSON.parse(r.import_settings || '[]').length; } catch {}
+            return (
+              <Card
+                key={r.id}
+                size="small"
+                style={{ marginBottom: 12, borderRadius: 8, boxShadow: '0 1px 2px rgba(0,0,0,0.05)' }}
+                title={
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                    <span style={{ fontWeight: 500 }}>{r.name}</span>
+                  </div>
+                }
+                extra={<Tag color="blue">映射字段: {fieldCount}</Tag>}
+              >
+                <div style={{ padding: '4px 0', fontSize: 13, display: 'flex', flexDirection: 'column', gap: 4 }}>
+                  <div><Text type="secondary">目标表:</Text> <Text strong>{r.target_table}</Text></div>
+                </div>
+                <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 12, borderTop: '1px solid #f0f0f0', paddingTop: 8, flexWrap: 'wrap' }}>
+                  <Button size="small" icon={<EyeOutlined />} onClick={() => handlePreview(r.id)}>预览</Button>
+                  <Button size="small" type="primary" icon={<ImportOutlined />} onClick={() => handleImport(r.id)} loading={importing === r.id}>导入</Button>
+                  <Button size="small" icon={<EditOutlined />} onClick={() => openEdit(r)}>编辑</Button>
+                  <Popconfirm title="确定删除？" onConfirm={() => handleDelete(r.id)} okText="确定" cancelText="取消">
+                    <Button size="small" danger icon={<DeleteOutlined />}>删除</Button>
+                  </Popconfirm>
+                </div>
+              </Card>
+            );
+          })}
+          {importResult && (
+            <Card size="small" style={{ marginTop: 16, background: '#f6ffed' }}>
+              <pre style={{ whiteSpace: "pre-wrap", margin: 0, fontSize: 13, color: "#389e0d" }}>{importResult}</pre>
+            </Card>
           )}
-        </div>
-        <Table dataSource={configs} columns={columns} rowKey="id" loading={loading} pagination={false} size="small"
-          scroll={{ x: 'max-content' }}
-          rowSelection={{
-            selectedRowKeys: selectedKeys,
-            onChange: (keys: React.Key[]) => setSelectedKeys(keys as number[]),
-          }} />
-        {importResult && (
-          <Card size="small" style={{ marginTop: 16, background: '#f6ffed' }}>
-            <pre style={{ whiteSpace: "pre-wrap", margin: 0, fontSize: 13, color: "#389e0d" }}>{importResult}</pre>
-          </Card>
-        )}
-      </Card>
+        </Card>
+      ) : (
+        <Card title={<><SwapOutlined /> 数据导入配置</>}>
+          <div style={{ marginBottom: 16, display: 'flex', gap: 8, alignItems: 'center' }}>
+            <Button type="primary" icon={<PlusOutlined />} onClick={openAdd} style={{ marginBottom: 16 }}>新增导入配置</Button>
+            {selectedKeys.length > 0 && (
+              <Button danger icon={<DeleteOutlined />} onClick={handleBatchDelete}>
+                批量删除 ({selectedKeys.length})
+              </Button>
+            )}
+          </div>
+          <Table dataSource={configs} columns={columns} rowKey="id" loading={loading} pagination={false} size="small"
+            scroll={{ x: 'max-content' }}
+            rowSelection={{
+              selectedRowKeys: selectedKeys,
+              onChange: (keys: React.Key[]) => setSelectedKeys(keys as number[]),
+            }} />
+          {importResult && (
+            <Card size="small" style={{ marginTop: 16, background: '#f6ffed' }}>
+              <pre style={{ whiteSpace: "pre-wrap", margin: 0, fontSize: 13, color: "#389e0d" }}>{importResult}</pre>
+            </Card>
+          )}
+        </Card>
+      )}
 
 
       {/* 导入进度弹窗 */}

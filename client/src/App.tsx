@@ -97,6 +97,45 @@ const App: React.FC = () => {
     <ConfigProvider
       theme={{ algorithm: theme.defaultAlgorithm, token: { colorPrimary: '#1677ff' } }}
     >
+      <style dangerouslySetInnerHTML={{ __html: `
+        .responsive-page-container {
+          margin: 24px;
+        }
+        @media (max-width: 768px) {
+          .responsive-page-container {
+            margin: 8px !important;
+          }
+          .ant-card-body {
+            padding: 12px !important;
+          }
+          .ant-card-head {
+            padding: 0 12px !important;
+            min-height: 40px !important;
+          }
+          .ant-card-head-title {
+            padding: 8px 0 !important;
+            font-size: 14px !important;
+          }
+          .ant-tabs-nav {
+            margin-bottom: 8px !important;
+          }
+          .ant-table-cell {
+            padding: 8px 8px !important;
+            font-size: 12px !important;
+          }
+          .table-action-column .ant-btn span:not(.anticon) {
+            display: none !important;
+          }
+          .table-action-column .ant-space {
+            gap: 4px !important;
+          }
+          .table-action-column {
+            width: auto !important;
+            min-width: 90px !important;
+            white-space: nowrap !important;
+          }
+        }
+      `}} />
       <Layout style={{ minHeight: '100vh' }}>
         <Header style={{ display: 'flex', alignItems: 'center', padding: isMobile ? '0 16px' : '0 24px', justifyContent: 'space-between' }}>
           <div style={{ display: 'flex', alignItems: 'center' }}>

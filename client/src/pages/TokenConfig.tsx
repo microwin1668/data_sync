@@ -113,6 +113,14 @@ const PgSourcesTab: React.FC = () => {
   const [testingId, setTestingId] = useState<number | null>(null);
   const [testResults, setTestResults] = useState<Record<number, { success: boolean; message: string; version?: string }>>({});
 
+  const [isMobile, setIsMobile] = useState(window.innerWidth < 768);
+
+  useEffect(() => {
+    const handleResize = () => setIsMobile(window.innerWidth < 768);
+    window.addEventListener('resize', handleResize);
+    return () => window.removeEventListener('resize', handleResize);
+  }, []);
+
   useEffect(() => { loadSources(); }, []);
 
   const loadSources = async () => {
@@ -192,15 +200,15 @@ const PgSourcesTab: React.FC = () => {
       title: '名称', dataIndex: 'name', key: 'name', width: 140,
       render: (v: string) => <><DatabaseOutlined style={{ marginRight: 6 }} />{v}</>,
     },
-    { title: '主机', dataIndex: 'host', key: 'host', width: 140 },
-    { title: '端口', dataIndex: 'port', key: 'port', width: 70 },
-    { title: '用户名', dataIndex: 'user', key: 'user', width: 100 },
+    { title: '主机', dataIndex: 'host', key: 'host', width: 140, responsive: ['md'] as any },
+    { title: '端口', dataIndex: 'port', key: 'port', width: 70, responsive: ['md'] as any },
+    { title: '用户名', dataIndex: 'user', key: 'user', width: 100, responsive: ['md'] as any },
     {
-      title: '数据库', key: 'database', width: 130,
+      title: '数据库', key: 'database', width: 130, responsive: ['sm'] as any,
       render: (_: any, r: PgDatasource) => r.database + (r.schema !== 'public' ? '/' + r.schema : ''),
     },
     {
-      title: '状态', key: 'status', width: 200,
+      title: '状态', key: 'status', width: 120,
       render: (_: any, r: PgDatasource) => {
         const tr = testResults[r.id];
         if (testingId === r.id) return <Tag color="processing">测试中...</Tag>;
@@ -211,7 +219,7 @@ const PgSourcesTab: React.FC = () => {
       },
     },
     {
-      title: '操作', key: 'action', width: 200,
+      title: '操作', key: 'action', width: 200, className: 'table-action-column',
       render: (_: any, r: PgDatasource) => (
         <Space>
           <Button size="small" icon={<CheckCircleOutlined />} onClick={() => handleTest(r)} loading={testingId === r.id}>测试</Button>
@@ -226,19 +234,68 @@ const PgSourcesTab: React.FC = () => {
 
   return (
     <div>
-      <div style={{ marginBottom: 16 }}>
-        <Button type="primary" icon={<PlusOutlined />} onClick={openAdd}>添加数据源</Button>
-      </div>
+      {isMobile ? (
+        <div>
+          <div style={{ marginBottom: 16 }}>
+            <Button type="primary" block icon={<PlusOutlined />} onClick={openAdd}>添加数据源</Button>
+          </div>
+          {loading && <div style={{ textAlign: 'center', padding: 20 }}><Spin /></div>}
+          {!loading && sources.length === 0 && <div style={{ textAlign: 'center', padding: 20, color: '#999' }}>暂无数据源</div>}
+          {!loading && sources.map(r => {
+            const tr = testResults[r.id];
+            const renderStatus = () => {
+              if (testingId === r.id) return <Tag color="processing">测试中...</Tag>;
+              if (!tr) return <Tag>未测试</Tag>;
+              return tr.success
+                ? <Tag color="success"><CheckCircleOutlined /> 连接成功</Tag>
+                : <Tooltip title={tr.message}><Tag color="error"><CloseCircleOutlined /> 连接失败</Tag></Tooltip>;
+            };
+            return (
+              <Card
+                key={r.id}
+                size="small"
+                style={{ marginBottom: 12, borderRadius: 8, boxShadow: '0 1px 2px rgba(0,0,0,0.05)' }}
+                title={
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                    <DatabaseOutlined style={{ color: '#1677ff' }} />
+                    <span style={{ fontWeight: 500 }}>{r.name}</span>
+                  </div>
+                }
+                extra={renderStatus()}
+              >
+                <div style={{ padding: '4px 0', fontSize: 13, display: 'flex', flexDirection: 'column', gap: 4 }}>
+                  <div><Text type="secondary">主机地址:</Text> <Text code>{r.host}:{r.port}</Text></div>
+                  <div><Text type="secondary">数据库名:</Text> <Text strong>{r.database}</Text>{r.schema !== 'public' && <Text type="secondary"> / {r.schema}</Text>}</div>
+                  <div><Text type="secondary">用户名:</Text> {r.user}</div>
+                </div>
+                <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 12, borderTop: '1px solid #f0f0f0', paddingTop: 8 }}>
+                  <Button size="small" icon={<CheckCircleOutlined />} onClick={() => handleTest(r)} loading={testingId === r.id}>测试</Button>
+                  <Button size="small" icon={<EditOutlined />} onClick={() => openEdit(r)}>编辑</Button>
+                  <Popconfirm title="确定删除此数据源？" onConfirm={() => handleDelete(r.id)} okText="确定" cancelText="取消">
+                    <Button size="small" danger icon={<DeleteOutlined />}>删除</Button>
+                  </Popconfirm>
+                </div>
+              </Card>
+            );
+          })}
+        </div>
+      ) : (
+        <>
+          <div style={{ marginBottom: 16 }}>
+            <Button type="primary" icon={<PlusOutlined />} onClick={openAdd}>添加数据源</Button>
+          </div>
 
-      <Table
-        dataSource={sources}
-        columns={columns}
-        rowKey="id"
-        loading={loading}
-        pagination={false}
-        size="small"
-        scroll={{ x: 'max-content' }}
-      />
+          <Table
+            dataSource={sources}
+            columns={columns}
+            rowKey="id"
+            loading={loading}
+            pagination={false}
+            size="small"
+            scroll={{ x: 'max-content' }}
+          />
+        </>
+      )}
 
       <Modal
         title={editingId ? '编辑数据源' : '添加数据源'}
@@ -462,7 +519,7 @@ const ExportImportTab: React.FC = () => {
 
 const TokenConfig: React.FC = () => {
   return (
-    <div style={{ margin: 24 }}>
+    <div className="responsive-page-container">
       <Card title={<><ApiOutlined /> 系统配置</>}>
         <Tabs
           defaultActiveKey="token"
