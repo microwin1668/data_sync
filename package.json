@@ -1,0 +1,11 @@
+{
+  "name": "data-sync",
+  "version": "1.0.0",
+  "private": true,
+  "description": "数据同步项目 - 远程API数据同步到本地PostgreSQL",
+  "scripts": {
+    "dev:server": "cd server && npm run dev",
+    "dev:client": "cd client && npm run dev",
+    "install:all": "cd server && npm install && cd ../client && npm install"
+  }
+}

@@ -1,0 +1,18 @@
+version: '3.8'
+
+services:
+  data-sync:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: data-sync:latest
+    container_name: data-sync
+    ports:
+      - "3001:3001"
+    volumes:
+      - ./server/data:/app/server/data        # SQLite 数据库持久化
+      - ./server/logs:/app/server/logs        # 导入失败日志持久化
+    environment:
+      - NODE_ENV=production
+      - PORT=3001
+    restart: unless-stopped
