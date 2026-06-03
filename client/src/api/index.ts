@@ -216,16 +216,35 @@ export function importSyncDataStream(id: number, onEvent: (event: string, data: 
 
 // PG 表/列工具
 export async function listPgTablesInSource(src: {
-  host: string; port: string; user: string; password: string; database: string;
+  host: string; port: string; user: string; password: string; database: string; schema?: string;
 }) {
   const res = await api.post('/pg/tables', src);
   return res.data;
 }
 
 export async function listPgColumnsInSource(src: {
-  host: string; port: string; user: string; password: string; database: string; table: string;
+  host: string; port: string; user: string; password: string; database: string; schema?: string; table: string;
 }) {
   const res = await api.post('/pg/columns', src);
+  return res.data;
+}
+
+// ========== Excel 手动导入 ==========
+
+export interface ExcelImportMapping {
+  sourceField: string;
+  targetField: string;
+  isPk?: boolean;
+}
+
+export async function runExcelImport(payload: {
+  pg_source_id: number;
+  target_table: string;
+  rows: Record<string, any>[];
+  mappings: ExcelImportMapping[];
+  batch_size?: number;
+}) {
+  const res = await api.post('/excel-import/run', payload);
   return res.data;
 }
 

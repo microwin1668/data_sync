@@ -14,6 +14,7 @@ import {
   createSyncConfig, updateSyncConfig, deleteSyncConfig, listSyncConfigs, getSyncConfig,
 } from '../db/sqlite';
 import { listPgTables, listPgColumns, previewSyncData, executeSyncImport, executeSyncImportStream, cancelImport } from '../services/syncService';
+import { executeExcelImport } from '../services/excelImportService';
 import { startScheduler, executeTaskSync } from '../services/schedulerService';
 import { startBackupScheduler, runBackupNow, checkPgDumpInstalled, installPgTools, getInstallProgress, resetInstallProgress, getBackupProgress, stopBackup, startBackupProgressMonitor, stopBackupProgressMonitor } from '../services/backupService';
 import { exportConfig, importConfig, clearConfig } from '../db/sqlite';
@@ -246,7 +247,7 @@ router.post('/pg/tables', async (ctx) => {
   const body = ctx.request.body as any;
   const result = await listPgTables({
     host: body.host, port: parseInt(body.port || '5432'),
-    user: body.user, password: body.password || '', database: body.database,
+    user: body.user, password: body.password || '', database: body.database, schema: body.schema || 'public',
   });
   ctx.body = result;
 });
@@ -255,8 +256,22 @@ router.post('/pg/columns', async (ctx) => {
   const body = ctx.request.body as any;
   const result = await listPgColumns({
     host: body.host, port: parseInt(body.port || '5432'),
-    user: body.user, password: body.password || '', database: body.database,
+    user: body.user, password: body.password || '', database: body.database, schema: body.schema || 'public',
   }, body.table || '');
+  ctx.body = result;
+});
+
+// ========== Excel 手动导入 ==========
+
+router.post('/excel-import/run', async (ctx) => {
+  const body = ctx.request.body as any;
+  const result = await executeExcelImport({
+    pg_source_id: Number(body.pg_source_id),
+    target_table: body.target_table || '',
+    rows: Array.isArray(body.rows) ? body.rows : [],
+    mappings: Array.isArray(body.mappings) ? body.mappings : [],
+    batch_size: body.batch_size,
+  });
   ctx.body = result;
 });
 

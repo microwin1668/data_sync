@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { ConfigProvider, Layout, Menu, theme, Drawer, Button } from 'antd';
-import { KeyOutlined, EyeOutlined, TableOutlined, SwapOutlined, ClockCircleOutlined, CloudServerOutlined, UserOutlined, LogoutOutlined, MenuOutlined } from '@ant-design/icons';
+import { KeyOutlined, EyeOutlined, TableOutlined, SwapOutlined, ClockCircleOutlined, CloudServerOutlined, UserOutlined, LogoutOutlined, MenuOutlined, FileExcelOutlined } from '@ant-design/icons';
 import TokenConfig from './pages/TokenConfig';
 import DataPreview from './pages/DataPreview';
 import BackupConfig from './pages/BackupConfig';
@@ -8,6 +8,7 @@ import TableConfig from './pages/TableConfig';
 import DataSync from './pages/DataSync';
 import TaskManager from './pages/TaskManager';
 import Login from './pages/Login';
+import ExcelImport from './pages/ExcelImport';
 
 const { Header, Content, Footer } = Layout;
 
@@ -15,6 +16,7 @@ const menuItems = [
   { key: 'token', icon: <KeyOutlined />, label: '系统配置' },
   { key: 'tables', icon: <TableOutlined />, label: '数据表配置' },
   { key: 'sync', icon: <SwapOutlined />, label: '数据导入配置' },
+  { key: 'excel', icon: <FileExcelOutlined />, label: 'Excel导入' },
   { key: 'backup', icon: <CloudServerOutlined />, label: '数据库备份配置' },
   { key: 'task', icon: <ClockCircleOutlined />, label: '任务管理' },
   { key: 'data', icon: <EyeOutlined />, label: '数据预览' },
@@ -74,6 +76,7 @@ const App: React.FC = () => {
       case 'token': return <TokenConfig />;
       case 'tables': return <TableConfig />;
       case 'sync': return <DataSync />;
+      case 'excel': return <ExcelImport />;
       case 'backup': return <BackupConfig />;
       case 'task': return <TaskManager />;
       case 'data': return <DataPreview />;

@@ -71,14 +71,15 @@ async function apiPostWithTokenRetry(
 // ========== PG 工具 ==========
 
 export async function listPgTables(pgSource: {
-  host: string; port: number; user: string; password: string; database: string;
+  host: string; port: number; user: string; password: string; database: string; schema?: string;
 }): Promise<{ success: boolean; tables?: string[]; message: string }> {
   const pool = new Pool({ ...pgSource, connectionTimeoutMillis: 5000 });
   let client;
   try {
     client = await pool.connect();
     const result = await client.query(
-      "SELECT table_name FROM information_schema.tables WHERE table_schema='public' ORDER BY table_name"
+      "SELECT table_name FROM information_schema.tables WHERE table_schema=$1 ORDER BY table_name",
+      [pgSource.schema || 'public']
     );
     return { success: true, tables: result.rows.map((r: any) => r.table_name), message: 'ok' };
   } catch (err: any) {
@@ -90,7 +91,7 @@ export async function listPgTables(pgSource: {
 }
 
 export async function listPgColumns(pgSource: {
-  host: string; port: number; user: string; password: string; database: string;
+  host: string; port: number; user: string; password: string; database: string; schema?: string;
 }, tableName: string): Promise<{ success: boolean; columns?: { name: string; type: string; comment: string }[]; message: string }> {
   const pool = new Pool({ ...pgSource, connectionTimeoutMillis: 5000 });
   let client;
@@ -98,8 +99,10 @@ export async function listPgColumns(pgSource: {
     client = await pool.connect();
     const result = await client.query(
       "SELECT col_description(a.attrelid,a.attnum) as comment, format_type(a.atttypid,a.atttypmod) as type, a.attname as name " +
-      "FROM pg_class as c, pg_attribute as a WHERE c.relname=$1 AND a.attrelid=c.oid AND a.attnum>0 AND a.attname NOT LIKE '%pg.dropped%'",
-      [tableName]
+      "FROM pg_class as c " +
+      "JOIN pg_namespace n ON n.oid=c.relnamespace, pg_attribute as a " +
+      "WHERE c.relname=$1 AND n.nspname=$2 AND a.attrelid=c.oid AND a.attnum>0 AND a.attname NOT LIKE '%pg.dropped%'",
+      [tableName, pgSource.schema || 'public']
     );
     return {
       success: true,
