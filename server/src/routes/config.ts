@@ -16,7 +16,7 @@ import {
 import { listPgTables, listPgColumns, previewSyncData, executeSyncImport, executeSyncImportStream, cancelImport } from '../services/syncService';
 import { executeExcelImport } from '../services/excelImportService';
 import { startScheduler, executeTaskSync } from '../services/schedulerService';
-import { startBackupScheduler, runBackupNow, checkPgDumpInstalled, installPgTools, getInstallProgress, resetInstallProgress, getBackupProgress, stopBackup, startBackupProgressMonitor, stopBackupProgressMonitor, listDumpTables, restoreBackup, getRestoreProgress } from '../services/backupService';
+import { startBackupScheduler, runBackupNow, checkPgDumpInstalled, installPgTools, getInstallProgress, resetInstallProgress, getBackupProgress, stopBackup, startBackupProgressMonitor, stopBackupProgressMonitor, listDumpTables, restoreBackup, getRestoreProgress, stopRestore } from '../services/backupService';
 import { exportConfig, importConfig, clearConfig } from '../db/sqlite';
 
 const router = new Router({ prefix: '/api' });
@@ -874,6 +874,13 @@ router.get('/backup-logs/:id/restore-progress', async (ctx) => {
   } else {
     ctx.body = { success: false, message: '未找到该备份的恢复进度，或者恢复任务已结束超过 30 秒' };
   }
+});
+
+// 中断恢复
+router.post('/backup-logs/:id/restore-stop', async (ctx) => {
+  const id = parseInt(ctx.params.id);
+  const result = stopRestore(id);
+  ctx.body = result;
 });
 
 // 批量删除备份日志

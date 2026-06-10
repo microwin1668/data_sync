@@ -183,6 +183,28 @@ export function getRestoreProgress(logId: number) {
   return restoreProgressMap.get(logId) || null;
 }
 
+// 正在运行的恢复进程 Map<logId, ChildProcess>
+export const runningRestores = new Map<number, any>();
+
+export function stopRestore(logId: number): { success: boolean; message: string } {
+  const child = runningRestores.get(logId);
+  if (child) {
+    try {
+      child.kill('SIGTERM');
+      const prog = restoreProgressMap.get(logId);
+      if (prog) {
+        prog.status = 'error';
+        prog.message = '恢复任务已被用户手动中断';
+      }
+      runningRestores.delete(logId);
+      return { success: true, message: '已发送中断信号' };
+    } catch (err: any) {
+      return { success: false, message: '中断失败: ' + err.message };
+    }
+  }
+  return { success: false, message: '未找到正在运行的恢复任务' };
+}
+
 /**
  * 检查 pg_dump 是否已安装
  */
@@ -461,6 +483,9 @@ function spawnPgDump(
       '-d', dbName, '-F', fmtArg, '-f', filepath, '-v',
     ], { env, timeout: 600000 });
     runningPgDumps.set(cfg.id, { process: pgDump, logId });
+    
+    // 消费 stdout 防止缓冲区溢出导致挂起
+    pgDump.stdout.on('data', () => {});
 
     let doneTables = 0;
 
@@ -791,7 +816,11 @@ export async function restoreBackup(
   return new Promise(async (resolve) => {
     const isSql = filepath.endsWith('.sql');
     const pgToolsPath = isSql ? getPsqlPath() : getPgRestorePath();
-    const env = { ...process.env, PGPASSWORD: targetSrc.password };
+    const env = { 
+      ...process.env, 
+      PGPASSWORD: targetSrc.password,
+      PGOPTIONS: '-c lock_timeout=10000 -c statement_timeout=300000' // 10s锁超时，5分钟语句超时，防止挂起
+    };
     
     // 初始化进度
     let totalTables = 0;
@@ -862,6 +891,12 @@ export async function restoreBackup(
     console.log(`[Restore] 启动 ${commandLabel}，目标库: ${dbName}，参数: ${args.map(a => a === targetSrc.password ? '****' : a).join(' ')}`);
 
     const child = spawn(pgToolsPath, args, { env });
+    if (options.logId) {
+      runningRestores.set(options.logId, child);
+    }
+    
+    // 消费 stdout 防止缓冲区溢出导致挂起
+    child.stdout.on('data', () => {});
     let stderr = '';
     
     child.stderr.on('data', (data) => {
@@ -893,6 +928,7 @@ export async function restoreBackup(
             if (prog) {
               const shortLine = cleanLine.replace(/^pg_restore:\s*/, '').substring(0, 80);
               prog.message = `正在载入: ${shortLine}`;
+              prog.currentTable = ''; // 清除当前表，避免显示已导入的最后一张表名从而误导用户以为卡住了
               if (totalTables === 0) {
                 prog.progress = Math.min(prog.progress + 2, 90);
               }
@@ -903,8 +939,19 @@ export async function restoreBackup(
     });
     
     child.on('close', (code) => {
+      if (options.logId) {
+        runningRestores.delete(options.logId);
+      }
       // 注意：pg_restore 和 psql 在有一些警告或非致命错误时可能会退出 1
-      const isSuccess = code === 0 || code === 1;
+      // 如果退出码是 1，且 stderr 中包含 critical 错误（如表已存在、主键冲突等），应视为失败
+      let isSuccess = code === 0;
+      if (code === 1) {
+        // 'does not exist' 属于在清理阶段（DROP TABLE/CONSTRAINT）时由于表本身不存在产生的无害警告，此处排除
+        const hasCriticalError = /already exists|duplicate key|violates/i.test(stderr);
+        if (!hasCriticalError) {
+          isSuccess = true;
+        }
+      }
       
       if (options.logId) {
         const prog = restoreProgressMap.get(options.logId);
@@ -943,6 +990,7 @@ export async function restoreBackup(
     
     child.on('error', (err) => {
       if (options.logId) {
+        runningRestores.delete(options.logId);
         const prog = restoreProgressMap.get(options.logId);
         if (prog) {
           prog.status = 'error';

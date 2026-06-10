@@ -12,7 +12,7 @@ import {
   listBackupConfigs, createBackupConfig, updateBackupConfig, deleteBackupConfig,
   runBackupNow, listBackupLogs, deleteBackupLogs, listPgSources, checkPgDump, installPgTools,
   stopBackup, getBackupProgress, getInstallProgress,
-  getPgSourceDatabases, getBackupLogTables, restoreBackupLog, getBackupRestoreProgress,
+  getPgSourceDatabases, getBackupLogTables, restoreBackupLog, getBackupRestoreProgress, stopBackupRestore,
 } from '../api';
 import type { BackupConfig, BackupLog, PgDatasource } from '../api';
 
@@ -82,7 +82,37 @@ const BackupPage: React.FC = () => {
   const [configDatabases, setConfigDatabases] = useState<string[]>([]);
   const [loadingConfigDatabases, setLoadingConfigDatabases] = useState(false);
   const [configRequirePassword, setConfigRequirePassword] = useState(false);
+  const [showRestoreButton, setShowRestoreButton] = useState(false);
+  const [stoppingRestore, setStoppingRestore] = useState(false);
 
+  const handleStopRestore = async () => {
+    if (!restoringLog) return;
+    setStoppingRestore(true);
+    try {
+      const res = await stopBackupRestore(restoringLog.id);
+      if (res.success) {
+        message.success(res.message || '已成功发送中断信号');
+      } else {
+        message.error(res.message || '中断失败');
+      }
+    } catch (err: any) {
+      message.error('中断失败: ' + err.message);
+    } finally {
+      setStoppingRestore(false);
+    }
+  };
+
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.shiftKey && (e.key === 'r' || e.key === 'R')) {
+        setShowRestoreButton(prev => !prev);
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown);
+    };
+  }, []);
 
   useEffect(() => {
     loadAll();
@@ -357,6 +387,57 @@ const BackupPage: React.FC = () => {
 
   // 打开恢复弹窗
   const handleOpenRestore = async (log: BackupLog) => {
+    // 检查是否有正在运行的恢复任务，如果有，直接恢复显示进度
+    try {
+      const progRes = await getBackupRestoreProgress(log.id);
+      if (progRes.success && progRes.data && progRes.data.status === 'running') {
+        setRestoringLog(log);
+        setRestoreProgress(progRes.data);
+        setRestoring(true);
+        setRestoreOpen(true);
+        
+        if (restoreProgressTimer.current) clearInterval(restoreProgressTimer.current);
+        restoreProgressTimer.current = setInterval(async () => {
+          try {
+            const progRes2 = await getBackupRestoreProgress(log.id);
+            if (progRes2.success && progRes2.data) {
+              const progressData = progRes2.data;
+              setRestoreProgress(progressData);
+              
+              if (progressData.status === 'success') {
+                message.success('数据恢复成功！');
+                setRestoring(false);
+                if (restoreProgressTimer.current) {
+                  clearInterval(restoreProgressTimer.current);
+                  restoreProgressTimer.current = null;
+                }
+              } else if (progressData.status === 'error') {
+                message.error('数据恢复失败: ' + progressData.message);
+                setRestoring(false);
+                if (restoreProgressTimer.current) {
+                  clearInterval(restoreProgressTimer.current);
+                  restoreProgressTimer.current = null;
+                }
+              }
+            } else {
+              if (progRes2.message && progRes2.message.includes('未找到')) {
+                setRestoring(false);
+                if (restoreProgressTimer.current) {
+                  clearInterval(restoreProgressTimer.current);
+                  restoreProgressTimer.current = null;
+                }
+              }
+            }
+          } catch (err) {
+            console.error('获取数据恢复进度失败:', err);
+          }
+        }, 1500);
+        return;
+      }
+    } catch (err) {
+      console.error('检查恢复任务进度失败:', err);
+    }
+
     setRestoringLog(log);
     setRestoreMode('all');
     setSelectedRestoreTables([]);
@@ -663,6 +744,7 @@ const BackupPage: React.FC = () => {
             </Button>
           );
         } else if (r.status === 'success' && r.backup_file) {
+          if (!showRestoreButton) return '-';
           return (
             <Button size="small" type="primary" ghost icon={<HistoryOutlined />}
               onClick={() => handleOpenRestore(r)}>
@@ -959,9 +1041,14 @@ const BackupPage: React.FC = () => {
         footer={
           restoreProgress ? (
             restoreProgress.status === 'running' ? (
-              <Button type="primary" onClick={handleCancelRestore}>
-                后台运行
-              </Button>
+              <Space>
+                <Button danger loading={stoppingRestore} onClick={handleStopRestore}>
+                  中断恢复
+                </Button>
+                <Button type="primary" onClick={handleCancelRestore}>
+                  后台运行
+                </Button>
+              </Space>
             ) : (
               <Button type="primary" onClick={handleCancelRestore}>
                 关闭

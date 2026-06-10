@@ -511,4 +511,9 @@ export async function getBackupRestoreProgress(logId: number): Promise<{ success
   return res.data;
 }
 
+export async function stopBackupRestore(logId: number): Promise<{ success: boolean; message: string }> {
+  const res = await api.post(`/backup-logs/${logId}/restore-stop`);
+  return res.data;
+}
+
 
