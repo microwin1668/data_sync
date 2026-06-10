@@ -47,6 +47,7 @@ export interface PgDatasource {
   password: string;
   database: string;
   schema: string;
+  disable_import?: number | boolean;
   created_at: string;
   updated_at: string;
 }
@@ -489,3 +490,25 @@ export async function deleteTaskExecutionLogs(ids: number[]): Promise<{ success:
   const res = await api.post('/task-logs/delete', { ids });
   return res.data;
 }
+
+export async function getPgSourceDatabases(sourceId: number, password?: string): Promise<{ success: boolean; data: string[]; message?: string }> {
+  const res = await api.post(`/config/pg-sources/${sourceId}/databases`, { password });
+  return res.data;
+}
+
+export async function getBackupLogTables(logId: number): Promise<{ success: boolean; data: { schema: string; name: string }[]; message?: string }> {
+  const res = await api.get(`/backup-logs/${logId}/tables`);
+  return res.data;
+}
+
+export async function restoreBackupLog(logId: number, data: { pg_source_id: number; database_name: string; tables?: string[]; overwrite: boolean; disable_triggers?: boolean }): Promise<{ success: boolean; message: string }> {
+  const res = await api.post(`/backup-logs/${logId}/restore`, data);
+  return res.data;
+}
+
+export async function getBackupRestoreProgress(logId: number): Promise<{ success: boolean; data: any; message?: string }> {
+  const res = await api.get(`/backup-logs/${logId}/restore-progress`);
+  return res.data;
+}
+
+

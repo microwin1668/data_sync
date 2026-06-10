@@ -169,6 +169,20 @@ export function clearBackupProgress(configId: number) {
   backupProgressMap.delete(configId);
 }
 
+// 恢复进度存储 Map<logId, progress>
+export const restoreProgressMap = new Map<number, {
+  status: string;       // running / success / error
+  progress: number;     // 0-100
+  message: string;
+  currentTable: string;
+  totalTables: number;
+  doneTables: number;
+}>();
+
+export function getRestoreProgress(logId: number) {
+  return restoreProgressMap.get(logId) || null;
+}
+
 /**
  * 检查 pg_dump 是否已安装
  */
@@ -672,3 +686,277 @@ export async function runBackupNow(id: number): Promise<{ success: boolean; mess
   runBackup(cfg).catch(err => console.error('[Backup] 执行异常:', err));
   return { success: true, message: '备份已开始执行，请查看进度' };
 }
+
+/**
+ * 获取 pg_restore 的执行路径
+ */
+export function getPgRestorePath(): string {
+  const check = checkPgDumpInstalled();
+  if (check.installed && check.pgRestore) {
+    if (check.path.endsWith('pg_dump')) {
+      return check.path.replace('pg_dump', 'pg_restore');
+    }
+  }
+  return 'pg_restore';
+}
+
+/**
+ * 获取 psql 的执行路径
+ */
+export function getPsqlPath(): string {
+  const check = checkPgDumpInstalled();
+  if (check.installed) {
+    if (check.path.endsWith('pg_dump')) {
+      const psqlPath = check.path.replace('pg_dump', 'psql');
+      if (fs.existsSync(psqlPath)) {
+        return psqlPath;
+      }
+    }
+  }
+  return 'psql';
+}
+
+/**
+ * 读取 dump 备份文件中的表列表
+ */
+export async function listDumpTables(filepath: string): Promise<{ schema: string; name: string }[]> {
+  return new Promise((resolve, reject) => {
+    if (!fs.existsSync(filepath)) {
+      reject(new Error('备份文件不存在: ' + filepath));
+      return;
+    }
+    const pgRestorePath = getPgRestorePath();
+    const env = { ...process.env };
+    
+    // 执行 pg_restore -l
+    const child = spawn(pgRestorePath, ['-l', filepath], { env });
+    let stdout = '';
+    let stderr = '';
+    
+    child.stdout.on('data', (data) => { stdout += data.toString(); });
+    child.stderr.on('data', (data) => { stderr += data.toString(); });
+    
+    child.on('close', (code) => {
+      // 如果退出码不为0，且没有得到正常输出，则认为执行出错
+      if (code !== 0 && !stdout) {
+        reject(new Error(stderr.trim() || `pg_restore 退出错误(code=${code})`));
+        return;
+      }
+      
+      const lines = stdout.split('\n');
+      const tables: { schema: string; name: string }[] = [];
+      for (const line of lines) {
+        const cleanLine = line.trim();
+        if (!cleanLine || cleanLine.startsWith(';')) continue;
+        const semiParts = cleanLine.split(';');
+        if (semiParts.length < 2) continue;
+        const parts = semiParts[1].trim().split(/\s+/);
+        // 格式通常为: 1259 41422 TABLE public mytable postgres
+        if (parts.length >= 5 && parts[2] === 'TABLE') {
+          tables.push({ schema: parts[3], name: parts[4] });
+        }
+      }
+      
+      // 去重
+      const seen = new Set<string>();
+      const uniqueTables: { schema: string; name: string }[] = [];
+      for (const t of tables) {
+        const key = `${t.schema}.${t.name}`;
+        if (!seen.has(key)) {
+          seen.add(key);
+          uniqueTables.push(t);
+        }
+      }
+      
+      // 排序
+      uniqueTables.sort((a, b) => `${a.schema}.${a.name}`.localeCompare(`${b.schema}.${b.name}`));
+      resolve(uniqueTables);
+    });
+    
+    child.on('error', (err) => {
+      reject(err);
+    });
+  });
+}
+
+/**
+ * 执行数据恢复（支持特定表恢复和覆盖同名表，带实时进度跟踪）
+ */
+export async function restoreBackup(
+  filepath: string,
+  targetSrc: any,
+  dbName: string,
+  options: { tables?: string[]; overwrite?: boolean; disableTriggers?: boolean; logId?: number }
+): Promise<{ success: boolean; message: string }> {
+  return new Promise(async (resolve) => {
+    const isSql = filepath.endsWith('.sql');
+    const pgToolsPath = isSql ? getPsqlPath() : getPgRestorePath();
+    const env = { ...process.env, PGPASSWORD: targetSrc.password };
+    
+    // 初始化进度
+    let totalTables = 0;
+    let doneTables = 0;
+    if (options.logId) {
+      if (options.tables && options.tables.length > 0) {
+        totalTables = options.tables.length;
+      } else {
+        try {
+          if (!isSql) {
+            const tbls = await listDumpTables(filepath);
+            totalTables = tbls.length;
+          }
+        } catch {
+          totalTables = 0;
+        }
+      }
+      restoreProgressMap.set(options.logId, {
+        status: 'running',
+        progress: 0,
+        message: '准备恢复中...',
+        currentTable: '',
+        totalTables,
+        doneTables: 0
+      });
+    }
+
+    let args: string[] = [];
+    if (isSql) {
+      args = [
+        '-h', targetSrc.host,
+        '-p', String(targetSrc.port),
+        '-U', targetSrc.user,
+        '-d', dbName,
+        '-f', filepath,
+      ];
+    } else {
+      args = [
+        '-h', targetSrc.host,
+        '-p', String(targetSrc.port),
+        '-U', targetSrc.user,
+        '-d', dbName,
+        '-v', // 详细输出，方便匹配进度
+      ];
+
+      // 如果需要禁用触发器，则添加 --disable-triggers 参数
+      if (options.disableTriggers) {
+        args.push('--disable-triggers');
+      }
+
+      // 如果需要覆盖已存在的表，则添加 --clean 和 --if-exists 参数
+      if (options.overwrite) {
+        args.push('--clean');
+        args.push('--if-exists');
+      }
+
+      // 如果指定了特定表，则只恢复这些表
+      if (options.tables && options.tables.length > 0) {
+        for (const table of options.tables) {
+          args.push('-t', table);
+        }
+      }
+
+      args.push(filepath);
+    }
+
+    const commandLabel = isSql ? 'psql' : 'pg_restore';
+    console.log(`[Restore] 启动 ${commandLabel}，目标库: ${dbName}，参数: ${args.map(a => a === targetSrc.password ? '****' : a).join(' ')}`);
+
+    const child = spawn(pgToolsPath, args, { env });
+    let stderr = '';
+    
+    child.stderr.on('data', (data) => {
+      const outputStr = data.toString();
+      stderr += outputStr;
+      
+      if (options.logId) {
+        const lines = outputStr.split('\n');
+        for (const line of lines) {
+          const cleanLine = line.trim();
+          if (!cleanLine) continue;
+          
+          // 解析恢复进度：pg_restore -v 输出格式例如: "pg_restore: processing data for table "public.users""
+          if (cleanLine.includes('processing data for table') || cleanLine.includes('restoring data for table') || cleanLine.includes('restoring table data')) {
+            doneTables++;
+            const match = cleanLine.match(/table "([^"]+)"/) || cleanLine.match(/table (\S+)/);
+            const currentTable = match ? match[1] : '';
+            const progress = totalTables > 0 ? Math.min(Math.round(doneTables / totalTables * 100), 99) : Math.min(doneTables * 10, 90);
+            
+            const prog = restoreProgressMap.get(options.logId);
+            if (prog) {
+              prog.progress = progress;
+              prog.doneTables = doneTables;
+              prog.currentTable = currentTable;
+              prog.message = `正在恢复表: ${currentTable || `表 ${doneTables}/${totalTables || '?'}`}`;
+            }
+          } else if (cleanLine.includes('restoring') || cleanLine.includes('creating')) {
+            const prog = restoreProgressMap.get(options.logId);
+            if (prog) {
+              const shortLine = cleanLine.replace(/^pg_restore:\s*/, '').substring(0, 80);
+              prog.message = `正在载入: ${shortLine}`;
+              if (totalTables === 0) {
+                prog.progress = Math.min(prog.progress + 2, 90);
+              }
+            }
+          }
+        }
+      }
+    });
+    
+    child.on('close', (code) => {
+      // 注意：pg_restore 和 psql 在有一些警告或非致命错误时可能会退出 1
+      const isSuccess = code === 0 || code === 1;
+      
+      if (options.logId) {
+        const prog = restoreProgressMap.get(options.logId);
+        if (prog) {
+          if (isSuccess) {
+            prog.status = 'success';
+            prog.progress = 100;
+            prog.message = '恢复成功';
+            if (prog.totalTables > 0) {
+              prog.doneTables = prog.totalTables;
+            }
+          } else {
+            prog.status = 'error';
+            prog.message = `恢复失败 (exit code ${code}): ${stderr.trim().substring(0, 300) || '未知错误'}`;
+          }
+        }
+        
+        // 30秒后从内存中移除进度
+        setTimeout(() => {
+          restoreProgressMap.delete(options.logId!);
+        }, 30000);
+      }
+
+      if (isSuccess) {
+        resolve({
+          success: true,
+          message: code === 1 ? `恢复完成，但有部分警告: ${stderr.trim().substring(0, 300)}` : '恢复成功'
+        });
+      } else {
+        resolve({
+          success: false,
+          message: `恢复失败 (exit code ${code}): ${stderr.trim() || '未知错误'}`
+        });
+      }
+    });
+    
+    child.on('error', (err) => {
+      if (options.logId) {
+        const prog = restoreProgressMap.get(options.logId);
+        if (prog) {
+          prog.status = 'error';
+          prog.message = `启动工具失败: ${err.message}`;
+        }
+        setTimeout(() => {
+          restoreProgressMap.delete(options.logId!);
+        }, 30000);
+      }
+      resolve({
+        success: false,
+        message: `启动恢复工具失败: ${err.message}`
+      });
+    });
+  });
+}
+
