@@ -14,7 +14,7 @@ const CLIENT_DIST = path.resolve(__dirname, '../../client/dist');
 const isProduction = process.env.NODE_ENV === 'production';
 
 app.use(cors({ origin: '*' }));
-app.use(bodyParser());
+app.use(bodyParser({ jsonLimit: '50mb', formLimit: '50mb', textLimit: '50mb' }));
 
 // 生产环境：先尝试作为静态文件请求处理
 if (isProduction && fs.existsSync(CLIENT_DIST)) {
@@ -71,6 +71,7 @@ async function start() {
     console.log('  GET    /api/config/remote-tables      - 远程表配置');
     console.log('  POST   /api/data/fetch                - 拉取数据');
     console.log('  GET    /api/sync-configs              - 导入配置');
+    console.log('  POST   /api/excel-import/run          - Excel 手动导入');
     console.log('  GET    /api/sync-tasks                - 定时任务');
     console.log('  GET    /api/logs/:filename            - 下载日志');
     console.log('  POST   /api/config/export             - 导出配置');

@@ -108,10 +108,15 @@ export async function initDb(): Promise<SqlJsDatabase> {
     "password TEXT DEFAULT ''," +
     "database TEXT NOT NULL DEFAULT ''," +
     "schema TEXT DEFAULT 'public'," +
+    "disable_import INTEGER DEFAULT 0," +
     "created_at TEXT DEFAULT (datetime('now','localtime'))," +
     "updated_at TEXT DEFAULT (datetime('now','localtime'))" +
     ")"
   );
+
+  tryMigrateTable("pg_datasources", [
+    { name: "disable_import", def: "INTEGER DEFAULT 0" },
+  ]);
 
   // sync_tasks 表（定时任务）
   db.run(
@@ -344,6 +349,7 @@ export interface PgDatasource {
   password: string;
   database: string;
   schema: string;
+  disable_import: number;
   created_at: string;
   updated_at: string;
 }
@@ -369,6 +375,7 @@ export async function listPgDatasources(): Promise<PgDatasource[]> {
       password: String(get('password')),
       database: String(get('database')),
       schema: String(get('schema')),
+      disable_import: Number(get('disable_import')) || 0,
       created_at: String(get('created_at')),
       updated_at: String(get('updated_at')),
     };
@@ -377,11 +384,12 @@ export async function listPgDatasources(): Promise<PgDatasource[]> {
 
 export async function createPgDatasource(ds: {
   name: string; host: string; port: string; user: string; password: string; database: string; schema: string;
+  disable_import?: number;
 }): Promise<number> {
   await initDb();
   db.run(
-    'INSERT INTO pg_datasources (name, host, port, user, password, database, schema) VALUES (?, ?, ?, ?, ?, ?, ?)',
-    [ds.name, ds.host, ds.port, ds.user, ds.password, ds.database, ds.schema || 'public']
+    'INSERT INTO pg_datasources (name, host, port, user, password, database, schema, disable_import) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+    [ds.name, ds.host, ds.port, ds.user, ds.password, ds.database, ds.schema || 'public', ds.disable_import || 0]
   );
   saveDb();
   const r = db.exec('SELECT MAX(id) as id FROM pg_datasources');
@@ -390,11 +398,12 @@ export async function createPgDatasource(ds: {
 
 export async function updatePgDatasource(id: number, ds: {
   name: string; host: string; port: string; user: string; password: string; database: string; schema: string;
+  disable_import?: number;
 }) {
   await initDb();
   db.run(
-    "UPDATE pg_datasources SET name=?, host=?, port=?, user=?, password=?, database=?, schema=?, updated_at=datetime('now','localtime') WHERE id=?",
-    [ds.name, ds.host, ds.port, ds.user, ds.password, ds.database, ds.schema || 'public', id]
+    "UPDATE pg_datasources SET name=?, host=?, port=?, user=?, password=?, database=?, schema=?, disable_import=?, updated_at=datetime('now','localtime') WHERE id=?",
+    [ds.name, ds.host, ds.port, ds.user, ds.password, ds.database, ds.schema || 'public', ds.disable_import || 0, id]
   );
   saveDb();
 }

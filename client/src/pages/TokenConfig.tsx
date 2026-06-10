@@ -135,13 +135,16 @@ const PgSourcesTab: React.FC = () => {
   const openAdd = () => {
     setEditingId(null);
     form.resetFields();
-    form.setFieldsValue({ port: '5432', schema: 'public' });
+    form.setFieldsValue({ port: '5432', schema: 'public', disable_import: false });
     setModalOpen(true);
   };
 
   const openEdit = (record: PgDatasource) => {
     setEditingId(record.id);
-    form.setFieldsValue(record);
+    form.setFieldsValue({
+      ...record,
+      disable_import: record.disable_import === 1 || record.disable_import === true
+    });
     setModalOpen(true);
   };
 
@@ -219,6 +222,10 @@ const PgSourcesTab: React.FC = () => {
       },
     },
     {
+      title: '导入限制', key: 'disable_import', width: 100,
+      render: (_: any, r: PgDatasource) => r.disable_import ? <Tag color="error">禁止导入</Tag> : <Tag color="success">允许导入</Tag>
+    },
+    {
       title: '操作', key: 'action', width: 200, className: 'table-action-column',
       render: (_: any, r: PgDatasource) => (
         <Space>
@@ -267,6 +274,7 @@ const PgSourcesTab: React.FC = () => {
                   <div><Text type="secondary">主机地址:</Text> <Text code>{r.host}:{r.port}</Text></div>
                   <div><Text type="secondary">数据库名:</Text> <Text strong>{r.database}</Text>{r.schema !== 'public' && <Text type="secondary"> / {r.schema}</Text>}</div>
                   <div><Text type="secondary">用户名:</Text> {r.user}</div>
+                  <div><Text type="secondary">导入限制:</Text> {r.disable_import ? <Tag color="error">禁止导入</Tag> : <Tag color="success">允许导入</Tag>}</div>
                 </div>
                 <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 12, borderTop: '1px solid #f0f0f0', paddingTop: 8 }}>
                   <Button size="small" icon={<CheckCircleOutlined />} onClick={() => handleTest(r)} loading={testingId === r.id}>测试</Button>
@@ -346,6 +354,14 @@ const PgSourcesTab: React.FC = () => {
               </Form.Item>
             </Col>
           </Row>
+          <Form.Item name="disable_import" valuePropName="checked">
+            <Checkbox>
+              禁止导入数据到此数据源
+              <span style={{ color: '#ff4d4f', marginLeft: 8, fontSize: 12 }}>
+                (启用后，在执行备份恢复时此数据源不会出现在目标选项中，防止误操作破坏数据)
+              </span>
+            </Checkbox>
+          </Form.Item>
         </Form>
       </Modal>
     </div>

@@ -14,8 +14,9 @@ import {
   createSyncConfig, updateSyncConfig, deleteSyncConfig, listSyncConfigs, getSyncConfig,
 } from '../db/sqlite';
 import { listPgTables, listPgColumns, previewSyncData, executeSyncImport, executeSyncImportStream, cancelImport } from '../services/syncService';
+import { executeExcelImport } from '../services/excelImportService';
 import { startScheduler, executeTaskSync } from '../services/schedulerService';
-import { startBackupScheduler, runBackupNow, checkPgDumpInstalled, installPgTools, getInstallProgress, resetInstallProgress, getBackupProgress, stopBackup, startBackupProgressMonitor, stopBackupProgressMonitor } from '../services/backupService';
+import { startBackupScheduler, runBackupNow, checkPgDumpInstalled, installPgTools, getInstallProgress, resetInstallProgress, getBackupProgress, stopBackup, startBackupProgressMonitor, stopBackupProgressMonitor, listDumpTables, restoreBackup, getRestoreProgress, stopRestore } from '../services/backupService';
 import { exportConfig, importConfig, clearConfig } from '../db/sqlite';
 
 const router = new Router({ prefix: '/api' });
@@ -117,6 +118,7 @@ router.post('/config/pg-sources', async (ctx) => {
     password: body.password || '',
     database: body.database,
     schema: body.schema || 'public',
+    disable_import: body.disable_import !== undefined ? (body.disable_import ? 1 : 0) : 0,
   });
   ctx.body = { success: true, message: '数据源添加成功', data: { id } };
 });
@@ -133,6 +135,7 @@ router.put('/config/pg-sources/:id', async (ctx) => {
     password: body.password || '',
     database: body.database || '',
     schema: body.schema || 'public',
+    disable_import: body.disable_import !== undefined ? (body.disable_import ? 1 : 0) : 0,
   });
   ctx.body = { success: true, message: '数据源更新成功' };
 });
@@ -246,7 +249,7 @@ router.post('/pg/tables', async (ctx) => {
   const body = ctx.request.body as any;
   const result = await listPgTables({
     host: body.host, port: parseInt(body.port || '5432'),
-    user: body.user, password: body.password || '', database: body.database,
+    user: body.user, password: body.password || '', database: body.database, schema: body.schema || 'public',
   });
   ctx.body = result;
 });
@@ -255,8 +258,22 @@ router.post('/pg/columns', async (ctx) => {
   const body = ctx.request.body as any;
   const result = await listPgColumns({
     host: body.host, port: parseInt(body.port || '5432'),
-    user: body.user, password: body.password || '', database: body.database,
+    user: body.user, password: body.password || '', database: body.database, schema: body.schema || 'public',
   }, body.table || '');
+  ctx.body = result;
+});
+
+// ========== Excel 手动导入 ==========
+
+router.post('/excel-import/run', async (ctx) => {
+  const body = ctx.request.body as any;
+  const result = await executeExcelImport({
+    pg_source_id: Number(body.pg_source_id),
+    target_table: body.target_table || '',
+    rows: Array.isArray(body.rows) ? body.rows : [],
+    mappings: Array.isArray(body.mappings) ? body.mappings : [],
+    batch_size: body.batch_size,
+  });
   ctx.body = result;
 });
 
@@ -662,6 +679,208 @@ router.get('/backup/install-progress', async (ctx) => {
 router.get('/backup-configs/:id/logs', async (ctx) => {
   const logs = await listBackupLogs(parseInt(ctx.params.id));
   ctx.body = { success: true, data: logs };
+});
+
+// 获取 PG 数据源的所有数据库列表
+router.get('/config/pg-sources/:id/databases', async (ctx) => {
+  const id = parseInt(ctx.params.id);
+  const sources = await listPgDatasources();
+  const src = sources.find(s => s.id === id);
+  if (!src) {
+    ctx.body = { success: false, message: '数据源不存在' };
+    return;
+  }
+
+  const pgConfig = {
+    host: src.host,
+    port: parseInt(src.port || '5432'),
+    user: src.user,
+    password: src.password || '',
+    database: src.database, // 连接到数据源默认数据库
+    connectionTimeoutMillis: 5000,
+  };
+
+  const pool = new Pool(pgConfig);
+  let client;
+  try {
+    client = await pool.connect();
+    const result = await client.query("SELECT datname FROM pg_database WHERE datistemplate = false ORDER BY datname");
+    const databases = result.rows.map((r: any) => r.datname);
+    ctx.body = { success: true, data: databases };
+  } catch (err: any) {
+    ctx.body = { success: false, message: '获取数据库列表失败: ' + err.message };
+  } finally {
+    if (client) { try { client.release(); } catch {} }
+    try { await pool.end(); } catch {}
+  }
+});
+
+// 获取 PG 数据源的所有数据库列表（支持 POST 传入临时密码）
+router.post('/config/pg-sources/:id/databases', async (ctx) => {
+  const id = parseInt(ctx.params.id);
+  const body = ctx.request.body as { password?: string };
+  const sources = await listPgDatasources();
+  const src = sources.find(s => s.id === id);
+  if (!src) {
+    ctx.body = { success: false, message: '数据源不存在' };
+    return;
+  }
+
+  const pgConfig = {
+    host: src.host,
+    port: parseInt(src.port || '5432'),
+    user: src.user,
+    password: body.password || src.password || '',
+    database: src.database, // 连接到数据源默认数据库
+    connectionTimeoutMillis: 5000,
+  };
+
+  const pool = new Pool(pgConfig);
+  let client;
+  try {
+    client = await pool.connect();
+    const result = await client.query("SELECT datname FROM pg_database WHERE datistemplate = false ORDER BY datname");
+    const databases = result.rows.map((r: any) => r.datname);
+    ctx.body = { success: true, data: databases };
+  } catch (err: any) {
+    ctx.body = { success: false, message: '获取数据库列表失败: ' + err.message };
+  } finally {
+    if (client) { try { client.release(); } catch {} }
+    try { await pool.end(); } catch {}
+  }
+});
+
+// 获取备份文件中的表结构列表
+router.get('/backup-logs/:id/tables', async (ctx) => {
+  const id = parseInt(ctx.params.id);
+  const log = await getBackupLog(id);
+  if (!log) {
+    ctx.body = { success: false, message: '备份日志不存在' };
+    return;
+  }
+  if (!log.backup_file) {
+    ctx.body = { success: false, message: '该备份日志没有关联的备份文件' };
+    return;
+  }
+
+  const config = await getBackupConfig(log.config_id);
+  const backupDir = config?.backup_dir || path.resolve(process.cwd(), 'backups');
+
+  // 查找 dump 文件
+  const files = log.backup_file.split(',').map(f => f.trim()).filter(Boolean);
+  const dumpFile = files.find(f => f.endsWith('.dump'));
+  
+  if (!dumpFile) {
+    ctx.body = { success: false, message: '该备份为 SQL 格式，不支持获取表列表进行选择性恢复。' };
+    return;
+  }
+
+  const filePath = path.join(backupDir, dumpFile);
+  if (!fs.existsSync(filePath)) {
+    ctx.body = { success: false, message: '备份文件不存在: ' + dumpFile };
+    return;
+  }
+
+  try {
+    const tables = await listDumpTables(filePath);
+    ctx.body = { success: true, data: tables };
+  } catch (err: any) {
+    ctx.body = { success: false, message: '获取表列表失败: ' + err.message };
+  }
+});
+
+// 恢复备份（异步启动）
+router.post('/backup-logs/:id/restore', async (ctx) => {
+  const id = parseInt(ctx.params.id);
+  const body = ctx.request.body as { 
+    pg_source_id: number; 
+    database_name: string; 
+    tables?: string[]; 
+    overwrite: boolean; 
+    disable_triggers?: boolean;
+    temp_password?: string;
+  };
+  
+  const log = await getBackupLog(id);
+  if (!log) {
+    ctx.body = { success: false, message: '备份日志不存在' };
+    return;
+  }
+  if (!log.backup_file) {
+    ctx.body = { success: false, message: '该备份日志没有关联 of 备份文件' };
+    return;
+  }
+
+  const config = await getBackupConfig(log.config_id);
+  const backupDir = config?.backup_dir || path.resolve(process.cwd(), 'backups');
+
+  const files = log.backup_file.split(',').map(f => f.trim()).filter(Boolean);
+  let selectedFile = files[0];
+  
+  // 优先选择 dump 文件进行恢复（如果指定了表，则必须使用 dump 格式）
+  const dumpFile = files.find(f => f.endsWith('.dump'));
+  const sqlFile = files.find(f => f.endsWith('.sql'));
+  
+  if (body.tables && body.tables.length > 0) {
+    if (dumpFile) {
+      selectedFile = dumpFile;
+    } else {
+      ctx.body = { success: false, message: '当前备份仅包含 SQL 格式，不支持恢复指定表。请不要选择指定表，或使用 DUMP 格式备份进行恢复。' };
+      return;
+    }
+  } else {
+    selectedFile = dumpFile || sqlFile || files[0];
+  }
+
+  const filePath = path.join(backupDir, selectedFile);
+  if (!fs.existsSync(filePath)) {
+    ctx.body = { success: false, message: '备份文件不存在: ' + selectedFile };
+    return;
+  }
+
+  const sources = await listPgDatasources();
+  const targetSrc = sources.find(s => s.id === body.pg_source_id);
+  if (!targetSrc) {
+    ctx.body = { success: false, message: '目标数据源不存在' };
+    return;
+  }
+
+  // 如果前端传入了临时密码，则覆盖使用临时密码
+  if (body.temp_password) {
+    targetSrc.password = body.temp_password;
+  }
+
+  const dbName = body.database_name || targetSrc.database;
+
+  // 异步执行数据恢复，并在后台更新进度
+  restoreBackup(filePath, targetSrc, dbName, {
+    tables: body.tables,
+    overwrite: body.overwrite,
+    disableTriggers: body.disable_triggers !== undefined ? body.disable_triggers : true,
+    logId: id
+  }).catch(err => {
+    console.error('[Async Restore] 任务运行异常:', err);
+  });
+
+  ctx.body = { success: true, message: '数据恢复任务已在后台启动，正在刷新进度...' };
+});
+
+// 获取恢复进度
+router.get('/backup-logs/:id/restore-progress', async (ctx) => {
+  const id = parseInt(ctx.params.id);
+  const progress = getRestoreProgress(id);
+  if (progress) {
+    ctx.body = { success: true, data: progress };
+  } else {
+    ctx.body = { success: false, message: '未找到该备份的恢复进度，或者恢复任务已结束超过 30 秒' };
+  }
+});
+
+// 中断恢复
+router.post('/backup-logs/:id/restore-stop', async (ctx) => {
+  const id = parseInt(ctx.params.id);
+  const result = stopRestore(id);
+  ctx.body = result;
 });
 
 // 批量删除备份日志

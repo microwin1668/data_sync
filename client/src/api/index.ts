@@ -47,6 +47,7 @@ export interface PgDatasource {
   password: string;
   database: string;
   schema: string;
+  disable_import?: number | boolean;
   created_at: string;
   updated_at: string;
 }
@@ -216,16 +217,35 @@ export function importSyncDataStream(id: number, onEvent: (event: string, data: 
 
 // PG 表/列工具
 export async function listPgTablesInSource(src: {
-  host: string; port: string; user: string; password: string; database: string;
+  host: string; port: string; user: string; password: string; database: string; schema?: string;
 }) {
   const res = await api.post('/pg/tables', src);
   return res.data;
 }
 
 export async function listPgColumnsInSource(src: {
-  host: string; port: string; user: string; password: string; database: string; table: string;
+  host: string; port: string; user: string; password: string; database: string; schema?: string; table: string;
 }) {
   const res = await api.post('/pg/columns', src);
+  return res.data;
+}
+
+// ========== Excel 手动导入 ==========
+
+export interface ExcelImportMapping {
+  sourceField: string;
+  targetField: string;
+  isPk?: boolean;
+}
+
+export async function runExcelImport(payload: {
+  pg_source_id: number;
+  target_table: string;
+  rows: Record<string, any>[];
+  mappings: ExcelImportMapping[];
+  batch_size?: number;
+}) {
+  const res = await api.post('/excel-import/run', payload);
   return res.data;
 }
 
@@ -470,3 +490,30 @@ export async function deleteTaskExecutionLogs(ids: number[]): Promise<{ success:
   const res = await api.post('/task-logs/delete', { ids });
   return res.data;
 }
+
+export async function getPgSourceDatabases(sourceId: number, password?: string): Promise<{ success: boolean; data: string[]; message?: string }> {
+  const res = await api.post(`/config/pg-sources/${sourceId}/databases`, { password });
+  return res.data;
+}
+
+export async function getBackupLogTables(logId: number): Promise<{ success: boolean; data: { schema: string; name: string }[]; message?: string }> {
+  const res = await api.get(`/backup-logs/${logId}/tables`);
+  return res.data;
+}
+
+export async function restoreBackupLog(logId: number, data: { pg_source_id: number; database_name: string; tables?: string[]; overwrite: boolean; disable_triggers?: boolean }): Promise<{ success: boolean; message: string }> {
+  const res = await api.post(`/backup-logs/${logId}/restore`, data);
+  return res.data;
+}
+
+export async function getBackupRestoreProgress(logId: number): Promise<{ success: boolean; data: any; message?: string }> {
+  const res = await api.get(`/backup-logs/${logId}/restore-progress`);
+  return res.data;
+}
+
+export async function stopBackupRestore(logId: number): Promise<{ success: boolean; message: string }> {
+  const res = await api.post(`/backup-logs/${logId}/restore-stop`);
+  return res.data;
+}
+
+

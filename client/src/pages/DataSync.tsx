@@ -117,7 +117,7 @@ const DataSync: React.FC = () => {
     if (!src) return;
     try {
       const res = await listPgTablesInSource({
-        host: src.host, port: src.port, user: src.user, password: src.password, database: src.database,
+        host: src.host, port: src.port, user: src.user, password: src.password, database: src.database, schema: src.schema,
       });
       if (res.success) setPgTables(res.tables || []);
     } catch { setPgTables([]); }
@@ -128,7 +128,7 @@ const DataSync: React.FC = () => {
     if (!src || !tableName) return;
     try {
       const res = await listPgColumnsInSource({
-        host: src.host, port: src.port, user: src.user, password: src.password, database: src.database, table: tableName,
+        host: src.host, port: src.port, user: src.user, password: src.password, database: src.database, schema: src.schema, table: tableName,
       });
       if (res.success) setDstFields((res.columns || []).map((c: any) => c.name));
     } catch { setDstFields([]); }
