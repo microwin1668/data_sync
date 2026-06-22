@@ -501,7 +501,7 @@ export async function getBackupLogTables(logId: number): Promise<{ success: bool
   return res.data;
 }
 
-export async function restoreBackupLog(logId: number, data: { pg_source_id: number; database_name: string; tables?: string[]; overwrite: boolean; disable_triggers?: boolean }): Promise<{ success: boolean; message: string }> {
+export async function restoreBackupLog(logId: number, data: { pg_source_id: number; database_name: string; tables?: string[]; schema?: string; overwrite: boolean; disable_triggers?: boolean }): Promise<{ success: boolean; message: string }> {
   const res = await api.post(`/backup-logs/${logId}/restore`, data);
   return res.data;
 }

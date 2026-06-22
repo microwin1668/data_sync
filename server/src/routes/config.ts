@@ -796,6 +796,7 @@ router.post('/backup-logs/:id/restore', async (ctx) => {
     pg_source_id: number; 
     database_name: string; 
     tables?: string[]; 
+    schema?: string;
     overwrite: boolean; 
     disable_triggers?: boolean;
     temp_password?: string;
@@ -817,15 +818,15 @@ router.post('/backup-logs/:id/restore', async (ctx) => {
   const files = log.backup_file.split(',').map(f => f.trim()).filter(Boolean);
   let selectedFile = files[0];
   
-  // 优先选择 dump 文件进行恢复（如果指定了表，则必须使用 dump 格式）
+  // 优先选择 dump 文件进行恢复（如果指定了表或 Schema，则必须使用 dump 格式）
   const dumpFile = files.find(f => f.endsWith('.dump'));
   const sqlFile = files.find(f => f.endsWith('.sql'));
   
-  if (body.tables && body.tables.length > 0) {
+  if ((body.tables && body.tables.length > 0) || body.schema) {
     if (dumpFile) {
       selectedFile = dumpFile;
     } else {
-      ctx.body = { success: false, message: '当前备份仅包含 SQL 格式，不支持恢复指定表。请不要选择指定表，或使用 DUMP 格式备份进行恢复。' };
+      ctx.body = { success: false, message: '当前备份仅包含 SQL 格式，不支持恢复指定表或 Schema。请不要选择指定表/Schema，或使用 DUMP 格式备份进行恢复。' };
       return;
     }
   } else {
@@ -855,6 +856,7 @@ router.post('/backup-logs/:id/restore', async (ctx) => {
   // 异步执行数据恢复，并在后台更新进度
   restoreBackup(filePath, targetSrc, dbName, {
     tables: body.tables,
+    schema: body.schema,
     overwrite: body.overwrite,
     disableTriggers: body.disable_triggers !== undefined ? body.disable_triggers : true,
     logId: id

@@ -64,7 +64,8 @@ const BackupPage: React.FC = () => {
   const [loadingDatabases, setLoadingDatabases] = useState(false);
   const [dumpTables, setDumpTables] = useState<{ schema: string; name: string }[]>([]);
   const [loadingTables, setLoadingTables] = useState(false);
-  const [restoreMode, setRestoreMode] = useState<'all' | 'custom'>('all');
+  const [restoreMode, setRestoreMode] = useState<'all' | 'schema' | 'custom'>('all');
+  const [selectedRestoreSchema, setSelectedRestoreSchema] = useState<string | undefined>(undefined);
   const [selectedRestoreTables, setSelectedRestoreTables] = useState<string[]>([]);
   const [restoring, setRestoring] = useState(false);
   const [restoreForm] = Form.useForm();
@@ -440,6 +441,7 @@ const BackupPage: React.FC = () => {
 
     setRestoringLog(log);
     setRestoreMode('all');
+    setSelectedRestoreSchema(undefined);
     setSelectedRestoreTables([]);
     setRestoreDatabases([]);
     setDumpTables([]);
@@ -566,6 +568,10 @@ const BackupPage: React.FC = () => {
         message.warning('请选择至少一个要恢复的表');
         return;
       }
+      if (restoreMode === 'schema' && !selectedRestoreSchema) {
+        message.warning('请选择要恢复的 Schema');
+        return;
+      }
 
       const targetSource = pgSources.find(s => s.id === values.pg_source_id);
 
@@ -586,7 +592,13 @@ const BackupPage: React.FC = () => {
               </div>
               <div style={{ marginTop: 6 }}>
                 <Text type="secondary">恢复范围: </Text>
-                <Text strong>{restoreMode === 'custom' ? `指定表 (${selectedRestoreTables.length} 张表)` : '整库备份 (全部恢复)'}</Text>
+                <Text strong>
+                  {restoreMode === 'custom' 
+                    ? `指定表 (${selectedRestoreTables.length} 张表)` 
+                    : restoreMode === 'schema' 
+                    ? `指定 Schema (${selectedRestoreSchema})` 
+                    : '整库备份 (全部恢复)'}
+                </Text>
               </div>
               {values.overwrite && (
                 <div style={{ marginTop: 6, color: '#ff4d4f', fontWeight: 'bold' }}>
@@ -606,7 +618,11 @@ const BackupPage: React.FC = () => {
             progress: 0,
             message: '准备恢复任务中...',
             currentTable: '',
-            totalTables: restoreMode === 'custom' ? selectedRestoreTables.length : 0,
+            totalTables: restoreMode === 'custom' 
+              ? selectedRestoreTables.length 
+              : restoreMode === 'schema' 
+              ? dumpTables.filter(t => t.schema === selectedRestoreSchema).length 
+              : 0,
             doneTables: 0
           });
           
@@ -616,6 +632,7 @@ const BackupPage: React.FC = () => {
             overwrite: !!values.overwrite,
             disable_triggers: !!values.disable_triggers,
             tables: restoreMode === 'custom' ? selectedRestoreTables : undefined,
+            schema: restoreMode === 'schema' ? selectedRestoreSchema : undefined,
             temp_password: values.temp_password
           };
 
@@ -1227,6 +1244,12 @@ const BackupPage: React.FC = () => {
               <Form.Item label="恢复范围" name="restore_mode">
                 <Radio.Group onChange={(e) => setRestoreMode(e.target.value)} value={restoreMode}>
                   <Radio value="all">全部恢复</Radio>
+                  <Radio value="schema" disabled={restoringLog && !restoringLog.backup_file.split(',').some(f => f.trim().endsWith('.dump'))}>
+                    恢复指定 Schema
+                    {restoringLog && !restoringLog.backup_file.split(',').some(f => f.trim().endsWith('.dump')) && (
+                      <span style={{ color: '#ccc', fontSize: 12, marginLeft: 8 }}>(仅 DUMP 格式支持 Schema)</span>
+                    )}
+                  </Radio>
                   <Radio value="custom" disabled={restoringLog && !restoringLog.backup_file.split(',').some(f => f.trim().endsWith('.dump'))}>
                     恢复指定表
                     {restoringLog && !restoringLog.backup_file.split(',').some(f => f.trim().endsWith('.dump')) && (
@@ -1235,6 +1258,18 @@ const BackupPage: React.FC = () => {
                   </Radio>
                 </Radio.Group>
               </Form.Item>
+
+              {restoreMode === 'schema' && (
+                <Form.Item label="选择要恢复的 Schema" required>
+                  <Select
+                    placeholder="请选择要恢复的 Schema"
+                    value={selectedRestoreSchema}
+                    onChange={(val) => setSelectedRestoreSchema(val)}
+                    options={Array.from(new Set(dumpTables.map(t => t.schema))).map(s => ({ value: s, label: s }))}
+                    style={{ width: '100%' }}
+                  />
+                </Form.Item>
+              )}
 
               {restoreMode === 'custom' && (
                 <Form.Item label="选择要恢复的表" required>

@@ -777,8 +777,15 @@ export async function listDumpTables(filepath: string): Promise<{ schema: string
         if (semiParts.length < 2) continue;
         const parts = semiParts[1].trim().split(/\s+/);
         // 格式通常为: 1259 41422 TABLE public mytable postgres
+        // 或者 (数据内容): 0 0 TABLE DATA public mytable postgres
         if (parts.length >= 5 && parts[2] === 'TABLE') {
-          tables.push({ schema: parts[3], name: parts[4] });
+          if (parts[3] === 'DATA') {
+            if (parts.length >= 6) {
+              tables.push({ schema: parts[4], name: parts[5] });
+            }
+          } else {
+            tables.push({ schema: parts[3], name: parts[4] });
+          }
         }
       }
       
@@ -811,7 +818,7 @@ export async function restoreBackup(
   filepath: string,
   targetSrc: any,
   dbName: string,
-  options: { tables?: string[]; overwrite?: boolean; disableTriggers?: boolean; logId?: number }
+  options: { tables?: string[]; schema?: string; overwrite?: boolean; disableTriggers?: boolean; logId?: number }
 ): Promise<{ success: boolean; message: string }> {
   return new Promise(async (resolve) => {
     const isSql = filepath.endsWith('.sql');
@@ -828,6 +835,15 @@ export async function restoreBackup(
     if (options.logId) {
       if (options.tables && options.tables.length > 0) {
         totalTables = options.tables.length;
+      } else if (options.schema) {
+        try {
+          if (!isSql) {
+            const tbls = await listDumpTables(filepath);
+            totalTables = tbls.filter(t => t.schema === options.schema).length;
+          }
+        } catch {
+          totalTables = 0;
+        }
       } else {
         try {
           if (!isSql) {
@@ -846,6 +862,50 @@ export async function restoreBackup(
         totalTables,
         doneTables: 0
       });
+    }
+
+    // 自动创建缺少的 Schema
+    const schemasToCreate = new Set<string>();
+    if (options.schema) {
+      schemasToCreate.add(options.schema);
+    } else if (options.tables && options.tables.length > 0) {
+      for (const t of options.tables) {
+        if (t.includes('.')) {
+          schemasToCreate.add(t.split('.')[0]);
+        } else {
+          schemasToCreate.add('public');
+        }
+      }
+    } else if (!isSql) {
+      try {
+        const tbls = await listDumpTables(filepath);
+        for (const t of tbls) {
+          if (t.schema) schemasToCreate.add(t.schema);
+        }
+      } catch {}
+    }
+
+    if (schemasToCreate.size > 0) {
+      const { Pool } = require('pg');
+      const pool = new Pool({
+        host: targetSrc.host,
+        port: Number(targetSrc.port) || 5432,
+        user: targetSrc.user,
+        password: targetSrc.password,
+        database: dbName,
+        connectionTimeoutMillis: 5000,
+      });
+      try {
+        for (const schema of schemasToCreate) {
+          const safeSchemaName = schema.replace(/"/g, '""');
+          console.log(`[Restore] 自动检查并创建 Schema: ${safeSchemaName}`);
+          await pool.query(`CREATE SCHEMA IF NOT EXISTS "${safeSchemaName}"`);
+        }
+      } catch (err: any) {
+        console.error('[Restore] 自动创建 Schema 失败:', err);
+      } finally {
+        try { await pool.end(); } catch {}
+      }
     }
 
     let args: string[] = [];
@@ -877,10 +937,16 @@ export async function restoreBackup(
         args.push('--if-exists');
       }
 
-      // 如果指定了特定表，则只恢复这些表
+      // 如果指定了特定 Schema，则只恢复该 Schema 的对象
+      if (options.schema) {
+        args.push('-n', options.schema);
+      }
+
+      // 如果指定了特定表，则只恢复这些表。注意：pg_restore 的 -t 参数仅接受不含 Schema 前缀的纯表名
       if (options.tables && options.tables.length > 0) {
         for (const table of options.tables) {
-          args.push('-t', table);
+          const pureTableName = table.includes('.') ? table.split('.').slice(1).join('.') : table;
+          args.push('-t', pureTableName);
         }
       }
 
@@ -947,7 +1013,9 @@ export async function restoreBackup(
       let isSuccess = code === 0;
       if (code === 1) {
         // 'does not exist' 属于在清理阶段（DROP TABLE/CONSTRAINT）时由于表本身不存在产生的无害警告，此处排除
-        const hasCriticalError = /already exists|duplicate key|violates/i.test(stderr);
+        // 同样，'schema ".*" already exists' 也属于由于自动创建而产生的无害警告，也予以排除
+        // 但如果提示关系/表已存在、主键/约束冲突、或是 schema/database 不存在，则是致命错误
+        const hasCriticalError = /(relation|table|index|constraint|type|sequence) ".*" already exists|duplicate key|violates|schema ".*" does not exist|database ".*" does not exist/i.test(stderr);
         if (!hasCriticalError) {
           isSuccess = true;
         }
