@@ -7,9 +7,10 @@ import { getConfig, upsertTokenConfig, upsertDataApiUrl, updateAccessToken, upda
 import { sendNotifyMail } from '../services/notifyService';
 import { listPgDatasources, createPgDatasource, updatePgDatasource, deletePgDatasource, listSyncTasks, getSyncTask, createSyncTask, updateSyncTask, deleteSyncTask, listTaskExecutionLogs, createTaskExecutionLog, updateTaskExecutionLog, deleteTaskExecutionLog, listBackupConfigs, listBackupConfigsNames, getBackupConfig, createBackupConfig, updateBackupConfig, deleteBackupConfig, listBackupLogs, getBackupLog, deleteBackupLogs, listFileBackupConfigs, listFileBackupConfigsNames, getFileBackupConfig, createFileBackupConfig, updateFileBackupConfig, deleteFileBackupConfig, listFileBackupLogs, deleteFileBackupLogs } from '../db/sqlite';
 import axios from 'axios';
-import { fetchAccessToken, fetchDataFromApi, QueryParams } from '../services/apiService';
+import { fetchAccessTokenFor, fetchDataFromApi, getValidTokenFor, QueryParams } from '../services/apiService';
 import {
-  listRemoteTables, getRemoteTable, createRemoteTable, updateRemoteTable, deleteRemoteTable
+  listRemoteTables, getRemoteTable, createRemoteTable, updateRemoteTable, deleteRemoteTable,
+  listTokenConfigs, getTokenConfigById, createTokenConfig, updateTokenConfig, deleteTokenConfig, countRemoteTablesByTokenConfig
 } from '../db/sqlite';
 import { Pool } from 'pg';
 import {
@@ -86,9 +87,10 @@ router.post('/config/token', async (ctx) => {
 });
 
 router.post('/token/fetch', async (ctx) => {
-  const result = await fetchAccessToken();
+  const body = ctx.request.body as any;
+  // 支持指定 token 配置 id;不传则取第一条配置
+  const result = await fetchAccessTokenFor(body?.id);
   if (result.success && result.token) {
-    await updateAccessToken(result.token);
     ctx.body = { success: true, token: result.token, message: result.message };
   } else {
     ctx.body = { success: false, message: result.message };
@@ -244,10 +246,63 @@ router.post('/data/fetch', async (ctx) => {
   const body = ctx.request.body as any;
   const queryParams: QueryParams | undefined = body?.query;
   const apiUrlOverride = body?.apiUrl || undefined;
-  const result = await fetchDataFromApi(queryParams, apiUrlOverride);
+  const result = await fetchDataFromApi(queryParams, apiUrlOverride, body?.token_config_id);
   ctx.body = result;
 });
 
+
+// ========== Token 多配置管理 ==========
+
+router.get('/config/token-configs', async (ctx) => {
+  const list = await listTokenConfigs();
+  ctx.body = { success: true, data: list };
+});
+
+router.get('/config/token-configs/:id', async (ctx) => {
+  const t = await getTokenConfigById(parseInt(ctx.params.id));
+  if (t) ctx.body = { success: true, data: t };
+  else ctx.body = { success: false, message: '未找到' };
+});
+
+router.post('/config/token-configs', async (ctx) => {
+  const body = ctx.request.body as any;
+  if (!body.name || !body.token_url) {
+    ctx.body = { success: false, message: '配置名称和 Token URL 为必填项' };
+    return;
+  }
+  const id = await createTokenConfig({
+    name: body.name,
+    token_url: body.token_url,
+    key: body.key || '',
+    secret: body.secret || '',
+  });
+  ctx.body = { success: true, message: 'Token 配置创建成功', data: { id } };
+});
+
+router.put('/config/token-configs/:id', async (ctx) => {
+  const id = parseInt(ctx.params.id);
+  const existing = await getTokenConfigById(id);
+  if (!existing) { ctx.body = { success: false, message: '未找到该 Token 配置' }; return; }
+  const body = ctx.request.body as any;
+  await updateTokenConfig(id, {
+    name: body.name || existing.name,
+    token_url: body.token_url !== undefined ? body.token_url : existing.token_url,
+    key: body.key !== undefined ? body.key : existing.key,
+    secret: body.secret !== undefined ? body.secret : existing.secret,
+  });
+  ctx.body = { success: true, message: 'Token 配置更新成功' };
+});
+
+router.delete('/config/token-configs/:id', async (ctx) => {
+  const id = parseInt(ctx.params.id);
+  const refCount = await countRemoteTablesByTokenConfig(id);
+  if (refCount > 0) {
+    ctx.body = { success: false, message: `该配置下还有 ${refCount} 张远程表,请先在「数据表配置」中修改它们的所属配置后再删除` };
+    return;
+  }
+  await deleteTokenConfig(id);
+  ctx.body = { success: true, message: '已删除' };
+});
 
 // ========== 远程数据表配置 CRUD ==========
 
@@ -271,6 +326,7 @@ router.post('/config/remote-tables', async (ctx) => {
   const id = await createRemoteTable({
     name: body.name,
     data_api_url: body.data_api_url,
+    token_config_id: body.token_config_id || 0,
     conditions: body.conditions || '[]',
     logic: body.logic || 'and',
     page: body.page || 1,
@@ -287,6 +343,7 @@ router.put('/config/remote-tables/:id', async (ctx) => {
   await updateRemoteTable(id, {
     name: body.name || '',
     data_api_url: body.data_api_url || '',
+    token_config_id: body.token_config_id || 0,
     conditions: body.conditions || '[]',
     logic: body.logic || 'and',
     page: body.page || 1,
@@ -341,14 +398,10 @@ router.post('/excel-import/run', async (ctx) => {
 router.get('/config/remote-tables/:id/fields', async (ctx) => {
   const t = await getRemoteTable(parseInt(ctx.params.id));
   if (!t) { ctx.body = { success: false, message: '未找到表配置' }; return; }
-  const cfg = await getConfig();
-  if (!cfg || !cfg.token_url) { ctx.body = { success: false, message: '请先配置 Token' }; return; }
 
   try {
-    // 先获取 token
-    const tokenRes = await axios.post(cfg.token_url, { key: cfg.key, secret: cfg.secret },
-      { timeout: 30000, headers: { 'Content-Type': 'application/json' } });
-    const token = tokenRes.data.result?.access_token || tokenRes.data.access_token;
+    // 用该表所属的 token 配置获取 token
+    const token = await getValidTokenFor(t.token_config_id);
 
     // 拉取一页数据获取 data_struct
     const apiRes = await axios.post(t.data_api_url, { access_token: token, page: 1, per_page: 1 },

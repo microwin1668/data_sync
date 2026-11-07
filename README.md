@@ -7,6 +7,7 @@ Data-Sync is a robust, production-ready, full-stack data synchronization and aut
 ## 🚀 Core Features
 
 ### 1. API Authentication & Token Auto-Renewal
+- **Multiple Token Configs**: Maintain any number of named Token configurations (each with its own URL, Key, Secret, and cached access_token) — one per data platform. Remote tables are assigned to their owning Token config and grouped into accordion sections in the Table Config page; token acquisition, caching, and auto-refresh all happen per-config.
 - **Credential Management**: Supports configuration of Client ID, Client Secret, and Token retrieval endpoints.
 - **Silent Auto-Refresh**: During sync execution, if an expired or invalid token is detected (matching specific error codes or message patterns), the system automatically calls the token refresh API, updates the local SQLite cache, and retries the sync request—requiring zero manual intervention.
 

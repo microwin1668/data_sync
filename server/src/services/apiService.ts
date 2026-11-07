@@ -1,39 +1,59 @@
 import axios from 'axios';
-import { getConfig, updateAccessToken } from '../db/sqlite';
+import {
+  getConfig, updateAccessToken, listTokenConfigs, getTokenConfigById, updateTokenConfigAccessToken,
+} from '../db/sqlite';
 
 export async function fetchAccessToken(): Promise<{ success: boolean; token?: string; message: string }> {
-  const config = await getConfig();
-  if (!config) {
-    return { success: false, message: '未找到配置信息' };
-  }
+  return fetchAccessTokenFor(undefined);
+}
 
-  if (!config.token_url) {
+/** 解析 access_token(兼容常见返回结构) */
+function extractToken(data: any): string | undefined {
+  return data.access_token || data.data?.access_token || data.result?.access_token || data.data?.result?.access_token;
+}
+
+/** 获取指定 token 配置(兼容:id 无效时回退到第一条配置,再回退到旧全局单例) */
+export async function resolveTokenConfig(tokenConfigId?: number): Promise<{
+  id: number; token_url: string; key: string; secret: string; access_token: string;
+} | null> {
+  if (tokenConfigId && tokenConfigId > 0) {
+    const t = await getTokenConfigById(tokenConfigId);
+    if (t) return t;
+  }
+  const list = await listTokenConfigs();
+  if (list.length > 0) return list[0];
+  const config = await getConfig();
+  if (config && config.token_url) {
+    return { id: 0, token_url: config.token_url, key: config.key, secret: config.secret, access_token: config.access_token };
+  }
+  return null;
+}
+
+/** 从指定 token 配置获取 access_token(成功后落库到对应配置) */
+export async function fetchAccessTokenFor(tokenConfigId?: number): Promise<{ success: boolean; token?: string; message: string }> {
+  const tc = await resolveTokenConfig(tokenConfigId);
+  if (!tc) {
+    return { success: false, message: '未找到 Token 配置,请先在系统配置 → Token 配置中添加' };
+  }
+  if (!tc.token_url) {
     return { success: false, message: '请先配置 Token URL' };
   }
 
   try {
     const response = await axios.post(
-      config.token_url,
-      { key: config.key, secret: config.secret },
+      tc.token_url,
+      { key: tc.key, secret: tc.secret },
       { timeout: 30000, headers: { 'Content-Type': 'application/json' } }
     );
     const data = response.data;
-
-    let accessToken: string | undefined;
-
-    if (data.access_token) {
-      accessToken = data.access_token;
-    } else if (data.data?.access_token) {
-      accessToken = data.data.access_token;
-    } else if (data.result?.access_token) {
-      accessToken = data.result.access_token;
-    } else if (data.data?.result?.access_token) {
-      accessToken = data.data.result.access_token;
-    }
+    const accessToken = extractToken(data);
 
     const isBizSuccess = data.code === undefined || data.code === 10000 || data.code === 0 || data.code === 200;
 
     if (accessToken && isBizSuccess) {
+      // 刷新结果落库到所属配置(id=0 为旧全局兜底)
+      if (tc.id > 0) await updateTokenConfigAccessToken(tc.id, accessToken);
+      else await updateAccessToken(accessToken);
       return { success: true, token: accessToken, message: 'Token 获取成功' };
     }
 
@@ -49,20 +69,19 @@ export async function fetchAccessToken(): Promise<{ success: boolean; token?: st
   }
 }
 
-/** 获取有效 token：优先从 config 取，如果不存在则实时获取 */
-async function getValidToken(): Promise<string> {
-  const config = await getConfig();
-  // 如果已有有效的 access_token，直接返回
-  if (config?.access_token) {
-    return config.access_token;
-  }
-  // 否则实时获取
-  const result = await fetchAccessToken();
-  if (result.success && result.token) {
-    await updateAccessToken(result.token);
-    return result.token;
-  }
+/** 获取有效 token(按 token 配置):优先取已缓存的 access_token,不存在则实时获取 */
+export async function getValidTokenFor(tokenConfigId?: number): Promise<string> {
+  const tc = await resolveTokenConfig(tokenConfigId);
+  if (!tc) throw new Error('未找到 Token 配置,请先在系统配置 → Token 配置中添加');
+  if (tc.access_token) return tc.access_token;
+  const result = await fetchAccessTokenFor(tc.id > 0 ? tc.id : undefined);
+  if (result.success && result.token) return result.token;
   throw new Error('无法获取 access_token: ' + result.message);
+}
+
+/** 兼容旧调用(取第一条配置) */
+async function getValidToken(): Promise<string> {
+  return getValidTokenFor(undefined);
 }
 
 /** 判断响应是否为 token 无效/过期 */
@@ -83,7 +102,8 @@ async function requestWithTokenRetry(
   token: string,
   params: QueryParams | undefined,
   needsPost: boolean,
-  retryOnTokenError = true
+  retryOnTokenError = true,
+  tokenConfigId?: number
 ): Promise<{ response: any; duration: number; tokenRefreshed: boolean }> {
   const startTime = Date.now();
   let currentToken = token;
@@ -111,10 +131,9 @@ async function requestWithTokenRetry(
     const respData = error.response?.data;
     // 检查是否为 token 失效
     if (retryOnTokenError && isTokenInvalid(respData)) {
-      // 重新获取 token 并重试
-      const newTokenResult = await fetchAccessToken();
+      // 用所属 token 配置重新获取 token 并重试
+      const newTokenResult = await fetchAccessTokenFor(tokenConfigId);
       if (newTokenResult.success && newTokenResult.token) {
-        await updateAccessToken(newTokenResult.token);
         currentToken = newTokenResult.token;
         tokenRefreshed = true;
         // 重试
@@ -258,7 +277,8 @@ function parseApiResponse(raw: any): {
 
 export async function fetchDataFromApi(
   queryParams?: QueryParams,
-  apiUrlOverride?: string
+  apiUrlOverride?: string,
+  tokenConfigId?: number
 ): Promise<{
   success: boolean;
   data?: {
@@ -284,8 +304,8 @@ export async function fetchDataFromApi(
   }
 
   try {
-    // 动态获取 token（不从 URL 中取静态 token）
-    const token = await getValidToken();
+    // 动态获取 token（按所属 token 配置，不从 URL 中取静态 token）
+    const token = await getValidTokenFor(tokenConfigId);
     // 清理 URL 中可能残留的 access_token 参数
     const cleanUrl = stripTokenFromUrl(rawUrl);
 
@@ -297,7 +317,7 @@ export async function fetchDataFromApi(
       ));
 
     const { response, duration, tokenRefreshed } = await requestWithTokenRetry(
-      cleanUrl, token, queryParams, needsPost
+      cleanUrl, token, queryParams, needsPost, true, tokenConfigId
     );
 
     const raw = response.data;

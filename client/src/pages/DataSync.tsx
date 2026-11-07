@@ -592,7 +592,7 @@ const DataSync: React.FC = () => {
     setEditPreviewData(null);
     try {
       const q = { ...editQuery, page: 1, perPage: 5 };
-      const res = await fetchRemoteData(q, tbl.data_api_url);
+      const res = await fetchRemoteData(q, tbl.data_api_url, (tbl as any).token_config_id);
       if (res.success && res.data) {
         const records = res.data.records || [];
         // 应用字段映射转换

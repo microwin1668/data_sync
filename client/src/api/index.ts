@@ -64,8 +64,46 @@ export async function saveTokenConfig(config: { key: string; secret: string; tok
   return res.data;
 }
 
-export async function fetchAccessToken() {
-  const res = await api.post('/token/fetch');
+export async function fetchAccessToken(id?: number) {
+  const res = await api.post('/token/fetch', id ? { id } : {});
+  return res.data;
+}
+
+// ========== Token 多配置 ==========
+
+export interface TokenConfigInfo {
+  id: number;
+  name: string;
+  token_url: string;
+  key: string;
+  secret: string;
+  access_token: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export async function listTokenConfigs(): Promise<{ success: boolean; data: TokenConfigInfo[] }> {
+  const res = await api.get('/config/token-configs');
+  return res.data;
+}
+
+export async function getTokenConfigById(id: number) {
+  const res = await api.get('/config/token-configs/' + id);
+  return res.data;
+}
+
+export async function createTokenConfig(t: { name: string; token_url: string; key?: string; secret?: string }) {
+  const res = await api.post('/config/token-configs', t);
+  return res.data;
+}
+
+export async function updateTokenConfig(id: number, t: { name: string; token_url: string; key?: string; secret?: string }) {
+  const res = await api.put('/config/token-configs/' + id, t);
+  return res.data;
+}
+
+export async function deleteTokenConfig(id: number): Promise<{ success: boolean; message?: string }> {
+  const res = await api.delete('/config/token-configs/' + id);
   return res.data;
 }
 
@@ -81,8 +119,8 @@ export async function saveDataApiConfig(data_api_url: string) {
   return res.data;
 }
 
-export async function fetchRemoteData(query?: QueryParams, apiUrl?: string): Promise<FetchResult> {
-  const res = await api.post('/data/fetch', { query, apiUrl });
+export async function fetchRemoteData(query?: QueryParams, apiUrl?: string, tokenConfigId?: number): Promise<FetchResult> {
+  const res = await api.post('/data/fetch', { query, apiUrl, token_config_id: tokenConfigId });
   return res.data;
 }
 
@@ -92,6 +130,7 @@ export interface RemoteTable {
   id: number;
   name: string;
   data_api_url: string;
+  token_config_id: number;
   conditions: string;
   logic: string;
   page: number;
@@ -118,7 +157,7 @@ export async function getRemoteTable(id: number) {
 }
 
 export async function createRemoteTable(t: {
-  name: string; data_api_url: string; conditions?: string; logic?: string;
+  name: string; data_api_url: string; token_config_id?: number; conditions?: string; logic?: string;
   page?: number; per_page?: number; order_field?: string; order_dir?: string;
 }) {
   const res = await api.post('/config/remote-tables', t);
@@ -126,7 +165,7 @@ export async function createRemoteTable(t: {
 }
 
 export async function updateRemoteTable(id: number, t: {
-  name: string; data_api_url: string; conditions?: string; logic?: string;
+  name: string; data_api_url: string; token_config_id?: number; conditions?: string; logic?: string;
   page?: number; per_page?: number; order_field?: string; order_dir?: string;
 }) {
   const res = await api.put('/config/remote-tables/' + id, t);

@@ -99,6 +99,37 @@ export async function initDb(): Promise<Database.Database> {
     { name: "target_database", def: "TEXT DEFAULT ''" },
   ]);
 
+  // token_configs 表(多 Token 配置)
+  db.exec(
+    "CREATE TABLE IF NOT EXISTS token_configs (" +
+    "id INTEGER PRIMARY KEY AUTOINCREMENT," +
+    "name TEXT NOT NULL DEFAULT ''," +
+    "token_url TEXT DEFAULT ''," +
+    "key TEXT DEFAULT ''," +
+    "secret TEXT DEFAULT ''," +
+    "access_token TEXT DEFAULT ''," +
+    "created_at TEXT DEFAULT (datetime('now','localtime'))," +
+    "updated_at TEXT DEFAULT (datetime('now','localtime'))" +
+    ")"
+  );
+  // remote_tables 挂到所属 token 配置
+  tryMigrateTable("remote_tables", [
+    { name: "token_config_id", def: "INTEGER DEFAULT 0" },
+  ]);
+
+  // 自动迁移:首次升级时,把旧单例 configs 的 Token 转为一条「默认配置」,并把已有远程表归入
+  const tkCount = db.prepare('SELECT COUNT(*) as cnt FROM token_configs').get() as any;
+  if (Number(tkCount?.cnt) === 0) {
+    const legacy = db.prepare('SELECT token_url, key, secret, access_token FROM configs LIMIT 1').get() as any;
+    if (legacy && legacy.token_url) {
+      const info = db.prepare(
+        "INSERT INTO token_configs (name, token_url, key, secret, access_token) VALUES ('默认配置', ?, ?, ?, ?)"
+      ).run(legacy.token_url, legacy.key || '', legacy.secret || '', legacy.access_token || '');
+      db.prepare('UPDATE remote_tables SET token_config_id=? WHERE token_config_id=0').run(Number(info.lastInsertRowid));
+      console.log('[DB] 已将旧 Token 单例配置迁移为「默认配置」(id=' + Number(info.lastInsertRowid) + ')');
+    }
+  }
+
   // pg_datasources 表
   db.exec(
     "CREATE TABLE IF NOT EXISTS pg_datasources (" +
@@ -503,6 +534,7 @@ export interface RemoteTable {
   id: number;
   name: string;
   data_api_url: string;
+  token_config_id: number;
   conditions: string;
   logic: string;
   page: number;
@@ -522,6 +554,7 @@ function rowToRemoteTable(row: Record<string, any>): RemoteTable {
     id: Number(get('id')) || 0,
     name: String(get('name')),
     data_api_url: String(get('data_api_url')),
+    token_config_id: Number(get('token_config_id')) || 0,
     conditions: String(get('conditions')),
     logic: String(get('logic')),
     page: Number(get('page')) || 1,
@@ -546,24 +579,102 @@ export async function getRemoteTable(id: number): Promise<RemoteTable | undefine
 }
 
 export async function createRemoteTable(t: {
-  name: string; data_api_url: string; conditions: string; logic: string;
+  name: string; data_api_url: string; token_config_id?: number; conditions: string; logic: string;
   page: number; per_page: number; order_field: string; order_dir: string;
 }): Promise<number> {
   await initDb();
   const info = db.prepare(
-    'INSERT INTO remote_tables (name, data_api_url, conditions, logic, page, per_page, order_field, order_dir) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
-  ).run(t.name, t.data_api_url, t.conditions, t.logic, t.page, t.per_page, t.order_field, t.order_dir);
+    'INSERT INTO remote_tables (name, data_api_url, token_config_id, conditions, logic, page, per_page, order_field, order_dir) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)'
+  ).run(t.name, t.data_api_url, t.token_config_id || 0, t.conditions, t.logic, t.page, t.per_page, t.order_field, t.order_dir);
   return Number(info.lastInsertRowid);
 }
 
 export async function updateRemoteTable(id: number, t: {
-  name: string; data_api_url: string; conditions: string; logic: string;
+  name: string; data_api_url: string; token_config_id?: number; conditions: string; logic: string;
   page: number; per_page: number; order_field: string; order_dir: string;
 }) {
   await initDb();
   db.prepare(
-    "UPDATE remote_tables SET name=?, data_api_url=?, conditions=?, logic=?, page=?, per_page=?, order_field=?, order_dir=?, updated_at=datetime('now','localtime') WHERE id=?"
-  ).run(t.name, t.data_api_url, t.conditions, t.logic, t.page, t.per_page, t.order_field, t.order_dir, id);
+    "UPDATE remote_tables SET name=?, data_api_url=?, token_config_id=?, conditions=?, logic=?, page=?, per_page=?, order_field=?, order_dir=?, updated_at=datetime('now','localtime') WHERE id=?"
+  ).run(t.name, t.data_api_url, t.token_config_id || 0, t.conditions, t.logic, t.page, t.per_page, t.order_field, t.order_dir, id);
+}
+
+// ========== Token 多配置 CRUD ==========
+
+export interface TokenConfigInfo {
+  id: number;
+  name: string;
+  token_url: string;
+  key: string;
+  secret: string;
+  access_token: string;
+  created_at: string;
+  updated_at: string;
+}
+
+function rowToTokenConfig(row: Record<string, any>): TokenConfigInfo {
+  const get = (name: string): any => {
+    const v = row[name];
+    return v === undefined || v === null ? '' : v;
+  };
+  return {
+    id: Number(get('id')) || 0,
+    name: String(get('name')),
+    token_url: String(get('token_url')),
+    key: String(get('key')),
+    secret: String(get('secret')),
+    access_token: String(get('access_token')),
+    created_at: String(get('created_at')),
+    updated_at: String(get('updated_at')),
+  };
+}
+
+export async function listTokenConfigs(): Promise<TokenConfigInfo[]> {
+  await initDb();
+  const rows = db.prepare('SELECT * FROM token_configs ORDER BY id ASC').all() as any[];
+  return rows.map(rowToTokenConfig);
+}
+
+export async function getTokenConfigById(id: number): Promise<TokenConfigInfo | undefined> {
+  await initDb();
+  const row = db.prepare('SELECT * FROM token_configs WHERE id=?').get(id) as any;
+  return row ? rowToTokenConfig(row) : undefined;
+}
+
+export async function createTokenConfig(t: {
+  name: string; token_url: string; key: string; secret: string; access_token?: string;
+}): Promise<number> {
+  await initDb();
+  const info = db.prepare(
+    "INSERT INTO token_configs (name, token_url, key, secret, access_token) VALUES (?, ?, ?, ?, ?)"
+  ).run(t.name, t.token_url, t.key || '', t.secret || '', t.access_token || '');
+  return Number(info.lastInsertRowid);
+}
+
+export async function updateTokenConfig(id: number, t: {
+  name: string; token_url: string; key: string; secret: string; access_token?: string;
+}): Promise<void> {
+  await initDb();
+  db.prepare(
+    "UPDATE token_configs SET name=?, token_url=?, key=?, secret=?, access_token=COALESCE(?, access_token), updated_at=datetime('now','localtime') WHERE id=?"
+  ).run(t.name, t.token_url, t.key || '', t.secret || '', t.access_token !== undefined ? t.access_token : null, id);
+}
+
+export async function updateTokenConfigAccessToken(id: number, token: string): Promise<void> {
+  await initDb();
+  db.prepare("UPDATE token_configs SET access_token=?, updated_at=datetime('now','localtime') WHERE id=?").run(token, id);
+}
+
+export async function deleteTokenConfig(id: number): Promise<void> {
+  await initDb();
+  // 被远程表引用的配置不允许删除(由路由层检查引用并提示)
+  db.prepare('DELETE FROM token_configs WHERE id=?').run(id);
+}
+
+export async function countRemoteTablesByTokenConfig(id: number): Promise<number> {
+  await initDb();
+  const row = db.prepare('SELECT COUNT(*) as cnt FROM remote_tables WHERE token_config_id=?').get(id) as any;
+  return Number(row?.cnt) || 0;
 }
 
 // ========== Sync Configs ==========
@@ -940,6 +1051,7 @@ export async function exportConfig(categories: string[] = []): Promise<Record<st
   if (all || categories.includes('token')) {
     const config = await getConfig();
     result.token = config ? { key: config.key, secret: config.secret, token_url: config.token_url, data_api_url: config.data_api_url } : {};
+    result.token_configs = await listTokenConfigs();
   }
   if (all || categories.includes('pg_sources')) {
     result.pg_sources = await listPgDatasources();
@@ -984,6 +1096,7 @@ export async function clearConfig(categories: string[] = []): Promise<void> {
 
   if (all || categories.includes('sync_tasks')) tables.push('sync_tasks');
   if (all || categories.includes('sync_configs')) tables.push('sync_configs');
+  if (all || categories.includes('token')) tables.push('token_configs');
   if (all || categories.includes('remote_tables')) tables.push('remote_tables');
   if (all || categories.includes('pg_sources')) tables.push('pg_datasources');
   if (all || categories.includes('backup_configs')) tables.push('backup_configs');
@@ -1096,6 +1209,23 @@ export async function importConfig(data: Record<string, any>, categories: string
       } catch (e: any) { errors.push('file_backup_configs:' + (cfg.name || cfg.id) + ' - ' + e.message); }
     }
     imported.push('file_backup_configs');
+  }
+
+  // 导入 Token 多配置(保留原 id,远程表的 token_config_id 归属不受影响)
+  if ((all || categories.includes('token')) && Array.isArray(data.token_configs)) {
+    try {
+      db.prepare('DELETE FROM token_configs').run();
+      for (const t of data.token_configs) {
+        db.prepare("INSERT INTO token_configs (id, name, token_url, key, secret, access_token, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
+          .run(t.id ?? null, t.name || '', t.token_url || '', t.key || '', t.secret || '', t.access_token || '', t.created_at || '', t.updated_at || '');
+      }
+      // 归属失效的远程表(指向不存在的配置)回退到第一条配置
+      const first = db.prepare('SELECT id FROM token_configs ORDER BY id ASC LIMIT 1').get() as any;
+      if (first) {
+        db.prepare("UPDATE remote_tables SET token_config_id=? WHERE token_config_id=0 OR token_config_id NOT IN (SELECT id FROM token_configs)").run(Number(first.id));
+      }
+      imported.push('token_configs');
+    } catch (e: any) { errors.push('token_configs: ' + e.message); }
   }
 
   // 导入邮件告警配置

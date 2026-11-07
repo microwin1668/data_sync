@@ -1,7 +1,7 @@
 import axios from 'axios';
 import { Pool } from 'pg';
-import { getSyncConfig, getRemoteTable, listPgDatasources, getConfig, updateAccessToken } from '../db/sqlite';
-import { getValidToken, fetchAccessToken } from './apiService';
+import { getSyncConfig, getRemoteTable, listPgDatasources, getConfig } from '../db/sqlite';
+import { getValidTokenFor, fetchAccessTokenFor } from './apiService';
 import type { SyncConfig } from '../db/sqlite';
 import { saveFailedRecords } from '../utils/logUtils';
 
@@ -38,11 +38,12 @@ function isTokenInvalid(data: any): boolean {
   return false;
 }
 
-/** 带 token 刷新的 API 请求 */
+/** 带 token 刷新的 API 请求(按表所属 token 配置刷新) */
 async function apiPostWithTokenRetry(
   url: string,
   body: Record<string, unknown>,
-  retryOnTokenError = true
+  retryOnTokenError = true,
+  tokenConfigId?: number
 ): Promise<any> {
   try {
     const res = await axios.post(url, body, {
@@ -53,10 +54,9 @@ async function apiPostWithTokenRetry(
   } catch (error: any) {
     const respData = error.response?.data;
     if (retryOnTokenError && isTokenInvalid(respData)) {
-      // 重新获取 token
-      const newTokenResult = await fetchAccessToken();
+      // 用所属 token 配置重新获取 token
+      const newTokenResult = await fetchAccessTokenFor(tokenConfigId);
       if (newTokenResult.success && newTokenResult.token) {
-        await updateAccessToken(newTokenResult.token);
         body.access_token = newTokenResult.token;
         return await axios.post(url, body, {
           timeout: 120000,
@@ -133,12 +133,14 @@ export async function previewSyncData(syncConfigId: number) {
   const importSettings: ImportSetting[] = parseSettings(syncCfg.import_settings);
 
   try {
-    // 动态获取 token
-    const token = await getValidToken();
+    // 动态获取 token(按表所属 token 配置)
+    const token = await getValidTokenFor(remoteTable.token_config_id);
 
     const apiResponse = await apiPostWithTokenRetry(
       remoteTable.data_api_url,
-      buildSyncRequestBody(token, syncCfg, { page: syncCfg.page || 1, per_page: syncCfg.per_page || 10 })
+      buildSyncRequestBody(token, syncCfg, { page: syncCfg.page || 1, per_page: syncCfg.per_page || 10 }),
+      true,
+      remoteTable.token_config_id
     );
 
     const rawData = apiResponse.data.result || apiResponse.data;
@@ -209,12 +211,14 @@ export async function executeSyncImportStream(
   const importSettings: ImportSetting[] = parseSettings(syncCfg.import_settings);
 
   try {
-    const token = await getValidToken();
+    const token = await getValidTokenFor(remoteTable.token_config_id);
 
     // 获取总数
     const firstPage = await apiPostWithTokenRetry(
       remoteTable.data_api_url,
-      buildSyncRequestBody(token, syncCfg, { page: 1, per_page: 1 })
+      buildSyncRequestBody(token, syncCfg, { page: 1, per_page: 1 }),
+      true,
+      remoteTable.token_config_id
     );
     const firstData = firstPage.data.result || firstPage.data;
     const total = firstData.total || 0;
@@ -249,7 +253,9 @@ export async function executeSyncImportStream(
       try {
         const pageRes = await apiPostWithTokenRetry(
           remoteTable.data_api_url,
-          buildSyncRequestBody(token, syncCfg, { page, per_page: perPage })
+          buildSyncRequestBody(token, syncCfg, { page, per_page: perPage }),
+          true,
+          remoteTable.token_config_id
         );
         const pageData = pageRes.data.result || pageRes.data;
         const records: any[] = pageData.data || pageData.records || pageData.list || [];
@@ -314,13 +320,15 @@ export async function executeSyncImport(syncConfigId: number) {
   const importSettings: ImportSetting[] = parseSettings(syncCfg.import_settings);
 
   try {
-    // 动态获取 token
-    const token = await getValidToken();
+    // 动态获取 token(按表所属 token 配置)
+    const token = await getValidTokenFor(remoteTable.token_config_id);
 
     // 获取总数
     const firstPage = await apiPostWithTokenRetry(
       remoteTable.data_api_url,
-      buildSyncRequestBody(token, syncCfg, { page: 1, per_page: 1 })
+      buildSyncRequestBody(token, syncCfg, { page: 1, per_page: 1 }),
+      true,
+      remoteTable.token_config_id
     );
     const firstData = firstPage.data.result || firstPage.data;
     const total = firstData.total || 0;
@@ -341,7 +349,9 @@ export async function executeSyncImport(syncConfigId: number) {
       try {
         const pageRes = await apiPostWithTokenRetry(
           remoteTable.data_api_url,
-          buildSyncRequestBody(token, syncCfg, { page, per_page: perPage })
+          buildSyncRequestBody(token, syncCfg, { page, per_page: perPage }),
+          true,
+          remoteTable.token_config_id
         );
         const pageData = pageRes.data.result || pageRes.data;
         const records: any[] = pageData.data || pageData.records || pageData.list || [];

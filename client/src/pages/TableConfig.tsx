@@ -1,15 +1,16 @@
 import React, { useState, useEffect } from 'react';
 import {
-  Card, Table, Button, Space, Modal, Form, Input, message, Popconfirm, Tag, Typography, Spin, Tabs
+  Card, Table, Button, Space, Modal, Form, Input, message, Popconfirm, Tag, Typography, Spin, Tabs, Collapse, Select
 } from 'antd';
 import {
   PlusOutlined, EditOutlined, DeleteOutlined, TableOutlined, ApiOutlined, EyeOutlined,
-  DownloadOutlined, SaveOutlined,
+  DownloadOutlined, SaveOutlined, KeyOutlined,
 } from '@ant-design/icons';
 import {
   listRemoteTables, createRemoteTable, updateRemoteTable, deleteRemoteTable, fetchRemoteData,
+  listTokenConfigs,
 } from '../api';
-import type { RemoteTable, QueryParams, QueryCondition } from '../api';
+import type { RemoteTable, QueryParams, QueryCondition, TokenConfigInfo } from '../api';
 import ConditionBuilder from '../components/ConditionBuilder';
 import JsonTreeViewer from '../components/JsonTreeViewer';
 
@@ -21,6 +22,7 @@ const defaultQuery: QueryParams = {
 
 const TableConfig: React.FC = () => {
   const [tables, setTables] = useState<RemoteTable[]>([]);
+  const [tokenConfigs, setTokenConfigs] = useState<TokenConfigInfo[]>([]);
   const [isMobile, setIsMobile] = useState(window.innerWidth < 768);
 
   useEffect(() => {
@@ -48,7 +50,7 @@ const TableConfig: React.FC = () => {
   const [previewFetching, setPreviewFetching] = useState(false);
   const [previewFields, setPreviewFields] = useState<Record<string, string>>({});
 
-  useEffect(() => { loadTables(); }, []);
+  useEffect(() => { loadTables(); loadTokenConfigs(); }, []);
 
   const loadTables = async () => {
     setLoading(true);
@@ -59,11 +61,20 @@ const TableConfig: React.FC = () => {
     finally { setLoading(false); }
   };
 
+  const loadTokenConfigs = async () => {
+    try {
+      const res = await listTokenConfigs();
+      if (res.success) setTokenConfigs(res.data);
+    } catch { }
+  };
+
   // ========== 新增/编辑 ==========
 
   const openAdd = () => {
     setEditingId(null);
     editForm.resetFields();
+    // 默认归属到第一条 Token 配置
+    if (tokenConfigs.length > 0) editForm.setFieldsValue({ token_config_id: tokenConfigs[0].id });
     setEditQuery(defaultQuery);
     setEditOpen(true);
   };
@@ -71,7 +82,7 @@ const TableConfig: React.FC = () => {
   const openEdit = (t: RemoteTable) => {
     try {
       setEditingId(t.id);
-      editForm.setFieldsValue({ name: t.name, data_api_url: t.data_api_url });
+      editForm.setFieldsValue({ name: t.name, data_api_url: t.data_api_url, token_config_id: t.token_config_id || tokenConfigs[0]?.id });
       let parsedConditions: QueryCondition[] = [];
       try { 
         const pc = JSON.parse(t.conditions || '[]'); 
@@ -97,6 +108,7 @@ const TableConfig: React.FC = () => {
       const payload = {
         name: values.name,
         data_api_url: values.data_api_url,
+        token_config_id: values.token_config_id || 0,
         conditions: JSON.stringify(editQuery.conditions),
         logic: editQuery.logic,
         page: editQuery.page,
@@ -178,7 +190,7 @@ const TableConfig: React.FC = () => {
   const handlePreviewFetch = async () => {
     setPreviewFetching(true);
     try {
-      const res = await fetchRemoteData(previewQuery, previewTable?.data_api_url);
+      const res = await fetchRemoteData(previewQuery, previewTable?.data_api_url, previewTable?.token_config_id);
       if (res.success && res.data) {
         setPreviewRecords(res.data.records);
         setPreviewRaw(res.data.rawResponse);
@@ -219,8 +231,8 @@ const TableConfig: React.FC = () => {
 
   const columns = [
     {
-      title: '表名', dataIndex: 'name', key: 'name', width: 180,
-      render: (v: string) => <><TableOutlined style={{ marginRight: 6 }} />{v}</>,
+      title: '表名', dataIndex: 'name', key: 'name', width: 240,
+      render: (v: string) => <span style={{ whiteSpace: 'nowrap' }}><TableOutlined style={{ marginRight: 6 }} />{v}</span>,
     },
     {
       title: '数据 API URL', dataIndex: 'data_api_url', key: 'data_api_url', ellipsis: true, responsive: ['sm'] as any,
@@ -301,13 +313,48 @@ const TableConfig: React.FC = () => {
               </Button>
             )}
           </div>
-          <Table dataSource={tables} columns={columns} rowKey="id"
-            loading={loading} pagination={false} size="small"
-            scroll={{ x: 'max-content' }}
-            rowSelection={{
-              selectedRowKeys: selectedKeys,
-              onChange: (keys: React.Key[]) => setSelectedKeys(keys as number[]),
-            }} />
+          {(() => {
+            // 按所属 Token 配置分组,每组一个手风琴面板
+            const tokenName = (id: number) => tokenConfigs.find(t => t.id === id)?.name || (id ? `配置#${id}` : '未指定');
+            const groupMap = new Map<number, RemoteTable[]>();
+            for (const r of tables) {
+              const key = r.token_config_id || 0;
+              if (!groupMap.has(key)) groupMap.set(key, []);
+              groupMap.get(key)!.push(r);
+            }
+            const groups = Array.from(groupMap.entries())
+              .sort((a, b) => a[0] - b[0])
+              .map(([tid, items]) => ({ tid, items }));
+            if (groups.length === 0) {
+              return loading
+                ? <div style={{ textAlign: 'center', padding: 24 }}><Spin /></div>
+                : <div style={{ textAlign: 'center', padding: 24, color: '#999' }}>暂无配置</div>;
+            }
+            return (
+              <Collapse accordion
+                defaultActiveKey={groups.length ? [String(groups[0].tid)] : []}
+                items={groups.map(g => ({
+                  key: String(g.tid),
+                  label: (
+                    <Space size={8} wrap>
+                      <KeyOutlined style={{ color: '#faad14' }} />
+                      <span style={{ color: '#888' }}>所属 Token 配置:</span>
+                      <Tag color="gold" style={{ margin: 0 }}>{tokenName(g.tid)}</Tag>
+                      <Tag style={{ margin: 0 }}>{g.items.length} 张表</Tag>
+                    </Space>
+                  ),
+                  children: (
+                    <Table dataSource={g.items} columns={columns} rowKey="id"
+                      pagination={false} size="small"
+                      scroll={{ x: 'max-content' }}
+                      rowSelection={{
+                        selectedRowKeys: selectedKeys,
+                        onChange: (keys: React.Key[]) => setSelectedKeys(keys as number[]),
+                      }} />
+                  ),
+                }))} />
+            );
+          })()}
         </Card>
       )}
 
@@ -322,9 +369,21 @@ const TableConfig: React.FC = () => {
         width={700}
       >
         <Form form={editForm} layout="vertical">
-          <Form.Item label="表中文名" name="name" rules={[{ required: true, message: '请输入表名' }]}>
-            <Input placeholder="例如：单位信息表、学生信息表" />
-          </Form.Item>
+          <Row gutter={16}>
+            <Col xs={24} sm={14}>
+              <Form.Item label="表中文名" name="name" rules={[{ required: true, message: '请输入表名' }]}>
+                <Input placeholder="例如：单位信息表、学生信息表" />
+              </Form.Item>
+            </Col>
+            <Col xs={24} sm={10}>
+              <Form.Item label="所属 Token 配置" name="token_config_id"
+                rules={[{ required: true, message: '请选择所属 Token 配置' }]}
+                extra="该表的数据请求将使用此 Token 配置鉴权">
+                <Select placeholder="选择 Token 配置"
+                  options={tokenConfigs.map(t => ({ value: t.id, label: t.name || `配置#${t.id}` }))} />
+              </Form.Item>
+            </Col>
+          </Row>
           <Form.Item label="数据 API URL" name="data_api_url" rules={[{ required: true, message: '请输入数据 API URL' }]}>
             <Input.TextArea rows={2} placeholder="http://dataapi.example.com/...?access_token=..." />
           </Form.Item>

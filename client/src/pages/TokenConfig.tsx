@@ -11,94 +11,163 @@ import { JsonView, allExpanded, defaultStyles } from 'react-json-view-lite';
 import 'react-json-view-lite/dist/index.css';
 
 import {
-  getTokenConfig, saveTokenConfig, fetchAccessToken, exportConfig, importConfig, clearConfig,
+  fetchAccessToken, exportConfig, importConfig, clearConfig,
+  listTokenConfigs, createTokenConfig, updateTokenConfig, deleteTokenConfig,
   listPgSources, createPgSource, updatePgSource, deletePgSource, testPgSourceConnection,
   getEmailNotifyConfig, saveEmailNotifyConfig, sendNotifyTestEmail,
 } from '../api';
-import type { PgDatasource } from '../api';
+import type { PgDatasource, TokenConfigInfo } from '../api';
 
 const { Text } = Typography;
 
-// ==================== Token 配置 Tab ====================
+// ==================== Token 配置 Tab(多配置管理) ====================
 
 const TokenConfigTab: React.FC = () => {
-  const [form] = Form.useForm();
+  const [list, setList] = useState<TokenConfigInfo[]>([]);
   const [loading, setLoading] = useState(false);
-  const [fetching, setFetching] = useState(false);
-  const [accessToken, setAccessToken] = useState('');
-  const [error, setError] = useState('');
+  const [modalOpen, setModalOpen] = useState(false);
+  const [editingId, setEditingId] = useState<number | null>(null);
+  const [form] = Form.useForm();
+  const [saving, setSaving] = useState(false);
+  const [fetchingId, setFetchingId] = useState<number | null>(null);
+  const [latestToken, setLatestToken] = useState<{ name: string; token: string } | null>(null);
 
-  useEffect(() => { loadConfig(); }, []);
+  useEffect(() => { loadList(); }, []);
 
-  const loadConfig = async () => {
+  const loadList = async () => {
+    setLoading(true);
     try {
-      const res = await getTokenConfig();
-      if (res.success && res.data) {
-        form.setFieldsValue({ key: res.data.key, secret: res.data.secret, token_url: res.data.token_url });
-        setAccessToken(res.data.access_token || '');
-      }
-    } catch (err: any) { message.error('加载配置失败: ' + err.message); }
+      const res = await listTokenConfigs();
+      if (res.success) setList(res.data);
+    } catch { message.error('加载 Token 配置失败'); }
+    finally { setLoading(false); }
+  };
+
+  const openAdd = () => {
+    setEditingId(null);
+    form.resetFields();
+    setModalOpen(true);
+  };
+
+  const openEdit = (t: TokenConfigInfo) => {
+    setEditingId(t.id);
+    form.setFieldsValue({ name: t.name, token_url: t.token_url, key: t.key, secret: t.secret });
+    setModalOpen(true);
   };
 
   const handleSave = async () => {
     try {
       const values = await form.validateFields();
-      setLoading(true); setError('');
-      const res = await saveTokenConfig(values);
-      if (res.success) message.success('Token 配置保存成功');
-      else message.error(res.message);
+      setSaving(true);
+      if (editingId) {
+        const res = await updateTokenConfig(editingId, values);
+        if (res.success) message.success('Token 配置更新成功');
+        else message.error(res.message);
+      } else {
+        const res = await createTokenConfig(values);
+        if (res.success) message.success('Token 配置创建成功');
+        else message.error(res.message);
+      }
+      setModalOpen(false);
+      loadList();
     } catch (err: any) {
       if (err.errorFields) return;
       message.error('保存失败: ' + err.message);
-    } finally { setLoading(false); }
+    } finally { setSaving(false); }
   };
 
-  const handleFetchToken = async () => {
-    try { await form.validateFields(); }
-    catch { message.warning('请先填写并保存 Token 配置'); return; }
-    setFetching(true); setError('');
-    try {
-      const res = await fetchAccessToken();
-      if (res.success) { setAccessToken(res.token); message.success(res.message); }
-      else { setError(res.message); message.error(res.message); }
-    } catch (err: any) {
-      const errMsg = '请求失败: ' + err.message;
-      setError(errMsg); message.error(errMsg);
-    } finally { setFetching(false); }
+  const handleDelete = async (t: TokenConfigInfo) => {
+    const res = await deleteTokenConfig(t.id);
+    if (res.success) { message.success('已删除'); loadList(); }
+    else message.error(res.message || '删除失败');
   };
+
+  const handleFetchToken = async (t: TokenConfigInfo) => {
+    setFetchingId(t.id);
+    try {
+      const res = await fetchAccessToken(t.id);
+      if (res.success) {
+        message.success(`「${t.name}」${res.message}`);
+        setLatestToken({ name: t.name, token: res.token || '' });
+        loadList();
+      } else message.error(res.message);
+    } catch (err: any) { message.error('请求失败: ' + err.message); }
+    finally { setFetchingId(null); }
+  };
+
+  const columns = [
+    { title: '配置名称', dataIndex: 'name', key: 'name', width: 160, render: (v: string) => <Text strong>{v || '(未命名)'}</Text> },
+    {
+      title: 'Token URL', dataIndex: 'token_url', key: 'token_url', ellipsis: true,
+      render: (v: string) => <Text type="secondary" style={{ fontSize: 12 }}>{v || '-'}</Text>
+    },
+    {
+      title: 'Key', dataIndex: 'key', key: 'key', width: 140, ellipsis: true,
+      render: (v: string) => <Text code style={{ fontSize: 12 }}>{v || '-'}</Text>
+    },
+    {
+      title: 'Token 状态', dataIndex: 'access_token', key: 'token_status', width: 100,
+      render: (v: string) => v
+        ? <Badge status="success" text="已获取" />
+        : <Badge status="default" text="未获取" />
+    },
+    {
+      title: '操作', key: 'action', width: 220, className: 'table-action-column',
+      render: (_: any, r: TokenConfigInfo) => (
+        <Space>
+          <Button size="small" type="primary" ghost icon={<SendOutlined />}
+            onClick={() => handleFetchToken(r)} loading={fetchingId === r.id}>获取 Token</Button>
+          <Button size="small" icon={<EditOutlined />} onClick={() => openEdit(r)}>编辑</Button>
+          <Popconfirm title="确定删除该 Token 配置？" onConfirm={() => handleDelete(r)} okText="确定" cancelText="取消">
+            <Button size="small" danger icon={<DeleteOutlined />}>删除</Button>
+          </Popconfirm>
+        </Space>
+      ),
+    },
+  ];
 
   return (
     <div>
-      <Form form={form} layout="vertical" style={{ maxWidth: 700 }}>
-        <Form.Item label="Token URL" name="token_url"
-          rules={[{ required: true, message: '请输入 Token URL' }]}
-          extra="获取 access_token 的完整 URL 地址"
-        >
-          <Input placeholder="http://dataapi.example.com/open_api/authentication/get_access_token" />
-        </Form.Item>
-        <Row gutter={16}>
-          <Col xs={24} sm={12}>
-            <Form.Item label="Key" name="key">
-              <Input placeholder="key 参数值（如有）" />
-            </Form.Item>
-          </Col>
-          <Col xs={24} sm={12}>
-            <Form.Item label="Secret" name="secret">
-              <Input.Password placeholder="secret 参数值（如有）" />
-            </Form.Item>
-          </Col>
-        </Row>
-        <Space>
-          <Button type="primary" icon={<SaveOutlined />} onClick={handleSave} loading={loading}>保存配置</Button>
-          <Button icon={<SendOutlined />} onClick={handleFetchToken} loading={fetching}>获取 Token</Button>
-        </Space>
-      </Form>
-      {accessToken && (
-        <Card size="small" title="Access Token" style={{ marginTop: 24, maxWidth: 700 }} type="inner">
-          <Text code copyable style={{ fontSize: 13, wordBreak: 'break-all' }}>{accessToken}</Text>
+      <div style={{ marginBottom: 16 }}>
+        <Button type="primary" icon={<PlusOutlined />} onClick={openAdd}>新增 Token 配置</Button>
+        <Text type="secondary" style={{ marginLeft: 12, fontSize: 12 }}>
+          每个数据源平台一套 Token 配置;在「数据表配置」中把远程表归属到对应配置
+        </Text>
+      </div>
+      <Table dataSource={list} columns={columns} rowKey="id" loading={loading}
+        pagination={false} size="small" scroll={{ x: 'max-content' }} />
+      {latestToken && (
+        <Card size="small" title={`Access Token(${latestToken.name})`} style={{ marginTop: 16 }} type="inner">
+          <Text code copyable style={{ fontSize: 13, wordBreak: 'break-all' }}>{latestToken.token}</Text>
         </Card>
       )}
-      {error && <Alert message="请求失败" description={error} type="error" showIcon style={{ marginTop: 16, maxWidth: 700 }} />}
+
+      <Modal title={editingId ? '编辑 Token 配置' : '新增 Token 配置'}
+        open={modalOpen} onOk={handleSave} onCancel={() => setModalOpen(false)}
+        okText="保存" cancelText="取消" confirmLoading={saving} width={560} maskClosable={false} destroyOnClose>
+        <Form form={form} layout="vertical">
+          <Form.Item label="配置名称" name="name" rules={[{ required: true, message: '请输入配置名称' }]}>
+            <Input placeholder="例如：教务系统、学工系统" />
+          </Form.Item>
+          <Form.Item label="Token URL" name="token_url"
+            rules={[{ required: true, message: '请输入 Token URL' }]}
+            extra="获取 access_token 的完整 URL 地址">
+            <Input placeholder="http://dataapi.example.com/open_api/authentication/get_access_token" />
+          </Form.Item>
+          <Row gutter={16}>
+            <Col xs={24} sm={12}>
+              <Form.Item label="Key" name="key">
+                <Input placeholder="key 参数值（如有）" />
+              </Form.Item>
+            </Col>
+            <Col xs={24} sm={12}>
+              <Form.Item label="Secret" name="secret">
+                <Input.Password placeholder="secret 参数值（如有）" />
+              </Form.Item>
+            </Col>
+          </Row>
+        </Form>
+      </Modal>
     </div>
   );
 };
