@@ -129,9 +129,14 @@ git clone https://github.com/microwin1668/data_sync.git data-sync && cd data-syn
 ./deploy.sh              # git pull --ff-only (aborts if local changes exist)
 ./deploy.sh --force      # discard local changes, force-align to origin/main
 ./deploy.sh --skip-build # skip build, only restart (e.g. after config tweaks)
+
+# Config data operations
+./deploy.sh --backup           # online consistent backup of config DB (no downtime, keeps last 10)
+./deploy.sh --restore <file>   # restore config from a backup (auto stop → copy → clean WAL → start → verify)
+./deploy.sh --status           # service status / version / config overview
 ```
 
-Options: `REPO_URL=... ./deploy.sh` overrides the repository URL; `PORT=3002 ./deploy.sh` overrides the service port. SQLite data (`server/data/`) and logs are never touched by updates.
+Every update automatically takes an online config backup first (stored in `config-backups/`, kept for the last 10). Options: `REPO_URL=... ./deploy.sh` overrides the repository URL; `PORT=3002 ./deploy.sh` overrides the service port. SQLite data (`server/data/`) and logs are never touched by updates.
 
 #### Method B: Docker Compose
 Containerized setup with automated multi-stage compilation. SQLite database and logs are persisted to host directories.

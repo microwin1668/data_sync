@@ -10,6 +10,7 @@ logs/
 .DS_Store
 *.zip
 server/data/
+config-backups/
 *.db
 
 
