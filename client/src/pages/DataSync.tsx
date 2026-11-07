@@ -344,12 +344,13 @@ const DataSync: React.FC = () => {
   };
 
   const handleCopyDatabaseChange = (dbName?: string) => {
-    copyForm.setFieldsValue({ target_table: undefined });
-    setCopyTables([]);
+    // 切换目标数据库时保留目标表(默认同名表),仅刷新表列表供选择参考
     const sourceId = copyForm.getFieldValue('pg_source_id');
     if (sourceId && dbName) {
       const pwd = copyForm.getFieldValue('temp_password');
       fetchCopyTables(sourceId, dbName, pwd);
+    } else {
+      setCopyTables([]);
     }
   };
 
