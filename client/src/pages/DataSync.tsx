@@ -1,11 +1,11 @@
 import React, { useState, useEffect } from 'react';
 import {
-  Card, Table, Button, Space, Modal, Form, Input, Select, message, Popconfirm, Tag, Typography, Spin, Row, Col, Divider, Checkbox, Tooltip, Progress, Collapse
+  Card, Table, Button, Space, Modal, Form, Input, Select, message, Popconfirm, Tag, Typography, Spin, Row, Col, Divider, Checkbox, Tooltip, Progress, Collapse, AutoComplete
 } from 'antd';
 import {
   PlusOutlined, EditOutlined, DeleteOutlined, SwapOutlined, DownloadOutlined,
   EyeOutlined, ImportOutlined, QuestionCircleOutlined, StopOutlined, ReloadOutlined, DatabaseOutlined,
-  ThunderboltOutlined, CloseOutlined, ClearOutlined,
+  ThunderboltOutlined, CloseOutlined, ClearOutlined, CopyOutlined,
 } from '@ant-design/icons';
 import {
   listSyncConfigs, createSyncConfig, updateSyncConfig, deleteSyncConfig,
@@ -66,6 +66,17 @@ const DataSync: React.FC = () => {
 
   const [editOpen, setEditOpen] = useState(false);
   const [editingId, setEditingId] = useState<number | null>(null);
+
+  // 复制配置弹窗
+  const [copyOpen, setCopyOpen] = useState(false);
+  const [copySrc, setCopySrc] = useState<SyncConfig | null>(null);
+  const [copyForm] = Form.useForm();
+  const [copySaving, setCopySaving] = useState(false);
+  const [copyDatabases, setCopyDatabases] = useState<string[]>([]);
+  const [copyTables, setCopyTables] = useState<string[]>([]);
+  const [copyLoadingDb, setCopyLoadingDb] = useState(false);
+  const [copyLoadingTables, setCopyLoadingTables] = useState(false);
+  const [copyRequirePassword, setCopyRequirePassword] = useState(false);
   const [form] = Form.useForm();
   const [fields, setFields] = useState<FieldMapping[]>([newField()]);
   const [pgTables, setPgTables] = useState<string[]>([]);
@@ -273,6 +284,104 @@ const DataSync: React.FC = () => {
     } catch (e: any) {
       message.error("打开编辑失败: " + e.message);
     }
+  };
+
+  // ========== 复制配置到另一个数据源/数据库 ==========
+  const fetchCopyDatabases = async (sourceId: number, password?: string) => {
+    setCopyLoadingDb(true);
+    try {
+      const res = await getPgSourceDatabases(sourceId, password);
+      if (res.success) setCopyDatabases(res.data || []);
+      else { message.warning('获取数据库列表失败: ' + (res.message || '')); setCopyDatabases([]); }
+    } catch { setCopyDatabases([]); }
+    finally { setCopyLoadingDb(false); }
+  };
+
+  const fetchCopyTables = async (sourceId: number, dbName: string, password?: string) => {
+    const src = pgSources.find(s => s.id === sourceId);
+    if (!src || !dbName) { setCopyTables([]); return; }
+    setCopyLoadingTables(true);
+    try {
+      const res = await listPgTablesInSource({
+        host: src.host, port: src.port, user: src.user,
+        password: password || src.password, database: dbName, schema: src.schema,
+      });
+      if (res.success) setCopyTables(res.tables || []);
+      else setCopyTables([]);
+    } catch { setCopyTables([]); }
+    finally { setCopyLoadingTables(false); }
+  };
+
+  // 拉取指定数据源+库下的表列表
+  const openCopy = (cfg: SyncConfig) => {
+    setCopySrc(cfg);
+    copyForm.resetFields();
+    const src = pgSources.find(s => s.id === cfg.pg_source_id);
+    setCopyRequirePassword(!!src && !src.password);
+    copyForm.setFieldsValue({
+      name: cfg.name,
+      pg_source_id: cfg.pg_source_id,
+      target_database: dbNameOf(cfg),
+      target_table: cfg.target_table,
+      per_page: cfg.per_page || 200,
+      page: cfg.page || 1,
+    });
+    setCopyTables(cfg.target_table ? [cfg.target_table] : []);
+    if (src && src.password) fetchCopyDatabases(cfg.pg_source_id);
+    else setCopyDatabases([]);
+    if (src && dbNameOf(cfg)) fetchCopyTables(cfg.pg_source_id, dbNameOf(cfg), src.password);
+    setCopyOpen(true);
+  };
+
+  const handleCopyPgSourceChange = (sourceId: number) => {
+    const src = pgSources.find(s => s.id === sourceId);
+    setCopyRequirePassword(!!src && !src.password);
+    // 目标数据库自动填入数据源默认库
+    copyForm.setFieldsValue({ target_database: src?.database || undefined, target_table: undefined, temp_password: undefined });
+    setCopyTables([]);
+    if (src && src.password) fetchCopyDatabases(sourceId);
+    else setCopyDatabases([]);
+  };
+
+  const handleCopyDatabaseChange = (dbName?: string) => {
+    copyForm.setFieldsValue({ target_table: undefined });
+    setCopyTables([]);
+    const sourceId = copyForm.getFieldValue('pg_source_id');
+    if (sourceId && dbName) {
+      const pwd = copyForm.getFieldValue('temp_password');
+      fetchCopyTables(sourceId, dbName, pwd);
+    }
+  };
+
+  const handleCopySave = async () => {
+    if (!copySrc) return;
+    try {
+      const values = await copyForm.validateFields();
+      setCopySaving(true);
+      // 复制源配置的全部映射/条件/排序,仅替换目标数据源/库/表/名称
+      await createSyncConfig({
+        name: values.name,
+        remote_table_id: copySrc.remote_table_id,
+        pg_source_id: values.pg_source_id,
+        target_database: (values.target_database || '').trim(),
+        target_table: values.target_table,
+        target_pk: copySrc.target_pk || '',
+        page: values.page || copySrc.page || 1,
+        per_page: values.per_page || copySrc.per_page || 200,
+        import_settings: copySrc.import_settings,
+        all_import: copySrc.all_import || 0,
+        conditions: copySrc.conditions,
+        logic: copySrc.logic,
+        order_field: copySrc.order_field || '',
+        order_dir: copySrc.order_dir || 'asc',
+      });
+      message.success('复制成功');
+      setCopyOpen(false);
+      loadAll();
+    } catch (err: any) {
+      if (err.errorFields) return;
+      message.error('复制失败: ' + (err.message || ''));
+    } finally { setCopySaving(false); }
   };
 
   const addField = () => setFields(prev => [...prev, newField()]);
@@ -598,13 +707,14 @@ const DataSync: React.FC = () => {
       },
     },
     {
-      title: '操作', key: 'action', width: 300, className: 'table-action-column',
+      title: '操作', key: 'action', width: 360, className: 'table-action-column',
       render: (_: any, r: SyncConfig) => (
         <Space>
           <Button size="small" icon={<EyeOutlined />} onClick={() => handlePreview(r.id)}>预览</Button>
           <Button size="small" type="primary" icon={<ImportOutlined />}
             onClick={() => handleImport(r.id)} loading={importing === r.id}>导入</Button>
           <Button size="small" icon={<EditOutlined />} onClick={() => openEdit(r)}>编辑</Button>
+          <Button size="small" icon={<CopyOutlined />} onClick={() => openCopy(r)}>复制</Button>
           <Popconfirm title="确定删除？" onConfirm={() => handleDelete(r.id)} okText="确定" cancelText="取消">
             <Button size="small" danger icon={<DeleteOutlined />}>删除</Button>
           </Popconfirm>
@@ -647,6 +757,7 @@ const DataSync: React.FC = () => {
                   <Button size="small" icon={<EyeOutlined />} onClick={() => handlePreview(r.id)}>预览</Button>
                   <Button size="small" type="primary" icon={<ImportOutlined />} onClick={() => handleImport(r.id)} loading={importing === r.id}>导入</Button>
                   <Button size="small" icon={<EditOutlined />} onClick={() => openEdit(r)}>编辑</Button>
+                  <Button size="small" icon={<CopyOutlined />} onClick={() => openCopy(r)}>复制</Button>
                   <Popconfirm title="确定删除？" onConfirm={() => handleDelete(r.id)} okText="确定" cancelText="取消">
                     <Button size="small" danger icon={<DeleteOutlined />}>删除</Button>
                   </Popconfirm>
@@ -1141,6 +1252,83 @@ const DataSync: React.FC = () => {
           </div>
         ))}
         <Button size="small" type="dashed" onClick={addField}>+ 添加字段</Button>
+      </Modal>
+
+      {/* 复制配置弹窗 */}
+      <Modal title={<>复制配置 {copySrc && <Text type="secondary">({copySrc.name})</Text>}</>}
+        open={copyOpen} onOk={handleCopySave} onCancel={() => setCopyOpen(false)}
+        okText="复制" cancelText="取消" confirmLoading={copySaving} width={560} maskClosable={false}>
+        <div style={{ marginBottom: 12, padding: '6px 10px', borderRadius: 4, background: '#e6f7ff', border: '1px solid #91d5ff', fontSize: 12, color: '#1890ff' }}>
+          ⓘ 远程数据表、字段映射、查询条件、排序将一并复制,仅替换目标数据源/数据库/表
+        </div>
+        <Form form={copyForm} layout="vertical">
+          <Form.Item label="配置名称" name="name" rules={[{ required: true, message: '请输入配置名称' }]}>
+            <Input placeholder="新配置名称" />
+          </Form.Item>
+          <Row gutter={16}>
+            <Col xs={24} sm={12}>
+              <Form.Item label="目标数据源" name="pg_source_id" rules={[{ required: true, message: '请选择目标数据源' }]}>
+                <Select placeholder="选择目标数据源" showSearch
+                  options={pgSources.map(s => ({ value: s.id, label: s.name }))}
+                  onChange={handleCopyPgSourceChange} />
+              </Form.Item>
+            </Col>
+            <Col xs={24} sm={12}>
+              <Form.Item label="目标数据库" required style={{ marginBottom: 0 }}>
+                <div style={{ display: 'flex', gap: 8 }}>
+                  <Form.Item name="target_database" noStyle rules={[{ required: true, message: '请选择目标数据库' }]}>
+                    <Select showSearch allowClear placeholder="选择目标数据库"
+                      loading={copyLoadingDb}
+                      options={copyDatabases.map(db => ({ value: db, label: db }))}
+                      onChange={handleCopyDatabaseChange} style={{ flex: 1 }} />
+                  </Form.Item>
+                  <Button icon={<ReloadOutlined />} loading={copyLoadingDb}
+                    title="刷新数据库列表"
+                    onClick={() => {
+                      const sourceId = copyForm.getFieldValue('pg_source_id');
+                      const pwd = copyForm.getFieldValue('temp_password');
+                      if (sourceId) fetchCopyDatabases(sourceId, pwd);
+                      else message.warning('请先选择目标数据源');
+                    }} />
+                </div>
+              </Form.Item>
+            </Col>
+          </Row>
+          {copyRequirePassword && (
+            <Form.Item label="临时连接密码" name="temp_password"
+              extra="该数据源未配置密码,输入后点击刷新按钮获取数据库列表">
+              <Input.Password placeholder="请输入 PostgreSQL 数据库密码"
+                autoComplete="new-password"
+                onBlur={(e) => {
+                  const val = e.target.value;
+                  const sourceId = copyForm.getFieldValue('pg_source_id');
+                  if (sourceId && val) fetchCopyDatabases(sourceId, val);
+                }} />
+            </Form.Item>
+          )}
+          <Form.Item label="目标表" name="target_table" rules={[{ required: true, message: '请选择或输入目标表名' }]}
+            extra="默认与原配置同名;可直接输入,或从目标库的表中选择">
+            <AutoComplete
+              placeholder="选择或输入目标表名"
+              options={copyTables.map(t => ({ value: t }))}
+              loading={copyLoadingTables}
+              filterOption={(input, option) =>
+                String(option?.value ?? '').toLowerCase().includes(input.toLowerCase())
+              } />
+          </Form.Item>
+          <Row gutter={16}>
+            <Col xs={12} sm={12}>
+              <Form.Item label="每页条数" name="per_page">
+                <Select options={[50, 100, 200, 500, 1000].map(n => ({ value: n, label: String(n) }))} />
+              </Form.Item>
+            </Col>
+            <Col xs={12} sm={12}>
+              <Form.Item label="起始页" name="page">
+                <Input type="number" min={1} />
+              </Form.Item>
+            </Col>
+          </Row>
+        </Form>
       </Modal>
 
       {/* 预览弹窗 */}

@@ -1,0 +1,5 @@
+#!/bin/bash
+# 每次提交自动升级 client 版本号 —— 保证每次推送到 GitHub 都带新版本
+# (在仓库根目录执行;node 不可用或脚本失败时静默跳过,不阻塞提交)
+node client/scripts/bump-version.js >/dev/null 2>&1 && git add client/package.json
+exit 0
