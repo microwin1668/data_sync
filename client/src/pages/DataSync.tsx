@@ -5,15 +5,15 @@ import {
 import {
   PlusOutlined, EditOutlined, DeleteOutlined, SwapOutlined, DownloadOutlined,
   EyeOutlined, ImportOutlined, QuestionCircleOutlined, StopOutlined, ReloadOutlined, DatabaseOutlined,
-  ThunderboltOutlined, CloseOutlined, ClearOutlined, CopyOutlined,
+  ThunderboltOutlined, CloseOutlined, ClearOutlined, CopyOutlined, KeyOutlined,
 } from '@ant-design/icons';
 import {
   listSyncConfigs, createSyncConfig, updateSyncConfig, deleteSyncConfig,
   previewSyncData, importSyncData, importSyncDataStream, importCancelStream,
   listRemoteTables, listPgSources, listPgTablesInSource, listPgColumnsInSource, getRemoteTableFields, fetchRemoteData,
-  getPgSourceDatabases,
+  getPgSourceDatabases, listTokenConfigs,
 } from '../api';
-import type { SyncConfig, RemoteTable, PgDatasource } from '../api';
+import type { SyncConfig, RemoteTable, PgDatasource, TokenConfigInfo } from '../api';
 import JsonTreeViewer from '../components/JsonTreeViewer';
 import ConditionBuilder from "../components/ConditionBuilder";
 import type { QueryParams, QueryCondition } from "../api";
@@ -56,6 +56,7 @@ const DataSync: React.FC = () => {
   const [loading, setLoading] = useState(false);
   const [remoteTables, setRemoteTables] = useState<RemoteTable[]>([]);
   const [pgSources, setPgSources] = useState<PgDatasource[]>([]);
+  const [tokenConfigs, setTokenConfigs] = useState<TokenConfigInfo[]>([]);
   const [isMobile, setIsMobile] = useState(window.innerWidth < 768);
 
   useEffect(() => {
@@ -86,6 +87,8 @@ const DataSync: React.FC = () => {
   const [batchLoadingDb, setBatchLoadingDb] = useState(false);
   const [batchRequirePassword, setBatchRequirePassword] = useState(false);
   const [form] = Form.useForm();
+  // 编辑弹窗:所选导出数据源(Token 配置),用于过滤远程数据表列表
+  const exportTokenSel = Form.useWatch('export_token_id', form);
   const [fields, setFields] = useState<FieldMapping[]>([newField()]);
   const [pgTables, setPgTables] = useState<string[]>([]);
   const [srcFields, setSrcFields] = useState<{ name: string; description: string }[]>([]);
@@ -127,14 +130,23 @@ const DataSync: React.FC = () => {
   const loadAll = async () => {
     setLoading(true);
     try {
-      const [cfgRes, tblRes, pgRes] = await Promise.all([
-        listSyncConfigs(), listRemoteTables(), listPgSources(),
+      const [cfgRes, tblRes, pgRes, tkRes] = await Promise.all([
+        listSyncConfigs(), listRemoteTables(), listPgSources(), listTokenConfigs(),
       ]);
       if (cfgRes.success) setConfigs(cfgRes.data);
       if (tblRes.success) setRemoteTables(tblRes.data);
       if (pgRes.success) setPgSources(pgRes.data);
+      if (tkRes.success) setTokenConfigs(tkRes.data);
     } catch { message.error('加载失败'); }
     finally { setLoading(false); }
+  };
+
+  // 导出数据源 = 该配置远程表所属的 Token 配置(数据来源平台)
+  const tokenNameOf = (r: SyncConfig): string => {
+    const tbl = remoteTables.find(t => t.id === r.remote_table_id);
+    if (!tbl) return '未指定';
+    const tk = tokenConfigs.find(t => t.id === (tbl.token_config_id || 0));
+    return tk ? (tk.name || `配置#${tk.id}`) : '未指定';
   };
 
   // 实际生效的目标库：配置指定了目标库则用它，否则用数据源默认库
@@ -226,6 +238,8 @@ const DataSync: React.FC = () => {
     setFields([newField()]);
     setPgTables([]); setSrcFields([]); setDstFields([]);
     setTargetDatabases([]); setTargetRequirePassword(false);
+    // 默认选中第一条 Token 配置(导出数据源)
+    if (tokenConfigs.length > 0) form.setFieldsValue({ export_token_id: tokenConfigs[0].id });
     setEditQuery(defaultQuery);    setEditOpen(true);
     setEditPreviewData(null);  };
 
@@ -233,8 +247,11 @@ const DataSync: React.FC = () => {
     try {
       setEditingId(cfg.id);
       const src = pgSources.find(s => s.id === cfg.pg_source_id);
+      // 导出数据源 = 远程表所属的 Token 配置(编辑时按表归属回填)
+      const tbl = remoteTables.find(t => t.id === cfg.remote_table_id);
       form.setFieldsValue({
         name: cfg.name, remote_table_id: cfg.remote_table_id, pg_source_id: cfg.pg_source_id,
+        export_token_id: tbl?.token_config_id || undefined,
         // 编辑时回显生效的数据库:未显式指定的旧配置回填数据源默认库
         target_database: (cfg.target_database || '').trim() || (src ? src.database : '') || undefined,
         target_table: cfg.target_table, page: cfg.page, per_page: cfg.per_page,
@@ -758,7 +775,17 @@ const DataSync: React.FC = () => {
   const columns = [
     { title: '配置名', dataIndex: 'name', key: 'name', width: 140 },
     {
-      title: '目标数据源', key: 'target_source', width: 120, responsive: ['sm'] as any,
+      title: '导出数据源', key: 'export_source', width: 130, responsive: ['sm'] as any,
+      render: (_: any, r: SyncConfig) => (
+        <Tooltip title="数据来源平台(该配置远程表所属的 Token 配置)">
+          <Tag color="purple" style={{ margin: 0, maxWidth: 130, overflow: 'hidden', textOverflow: 'ellipsis' }}>
+            <KeyOutlined style={{ marginRight: 2 }} />{tokenNameOf(r)}
+          </Tag>
+        </Tooltip>
+      ),
+    },
+    {
+      title: '导入数据源', key: 'target_source', width: 120, responsive: ['sm'] as any,
       render: (_: any, r: SyncConfig) => {
         const src = sourceMap[r.pg_source_id];
         return <Tag color="geekblue">{src ? src.name : (r.pg_source_id ? `#${r.pg_source_id}` : '未指定')}</Tag>;
@@ -822,7 +849,8 @@ const DataSync: React.FC = () => {
                 extra={<Tag color="blue">映射字段: {fieldCount}</Tag>}
               >
                 <div style={{ padding: '4px 0', fontSize: 13, display: 'flex', flexDirection: 'column', gap: 4 }}>
-                  <div><Text type="secondary">目标数据源:</Text> <Tag color="geekblue">{src ? src.name : (r.pg_source_id ? `#${r.pg_source_id}` : '未指定')}</Tag></div>
+                  <div><Text type="secondary">导出数据源:</Text> <Tag color="purple"><KeyOutlined style={{ marginRight: 2 }} />{tokenNameOf(r)}</Tag></div>
+                  <div><Text type="secondary">导入数据源:</Text> <Tag color="geekblue">{src ? src.name : (r.pg_source_id ? `#${r.pg_source_id}` : '未指定')}</Tag></div>
                   <div><Text type="secondary">目标数据库:</Text> <Tag color="cyan">{dbNameOf(r)}</Tag></div>
                   <div><Text type="secondary">目标表:</Text> <Text strong>{r.target_table}</Text></div>
                 </div>
@@ -1007,19 +1035,32 @@ const DataSync: React.FC = () => {
               </Form.Item>
             </Col>
             <Col xs={24} sm={8}>
-              <Form.Item label="远程数据表" name="remote_table_id" rules={[{ required: true }]}>
-                <Select placeholder="选择数据源表" options={remoteTables.map(t => ({ value: t.id, label: t.name }))}
+              <Form.Item label="导出数据源" name="export_token_id"
+                rules={[{ required: true, message: '请选择导出数据源' }]}
+                extra="数据来源平台(Token 配置),远程数据表列表将只显示该平台下的表">
+                <Select placeholder="选择 Token 配置" showSearch allowClear
+                  options={tokenConfigs.map(t => ({ value: t.id, label: t.name || `配置#${t.id}` }))}
+                  onChange={() => form.setFieldsValue({ remote_table_id: undefined })} />
+              </Form.Item>
+            </Col>
+            <Col xs={24} sm={8}>
+              <Form.Item label="远程数据表" name="remote_table_id" rules={[{ required: true, message: '请选择远程数据表' }]}>
+                <Select placeholder={exportTokenSel ? '选择数据源表' : '请先选择导出数据源'}
+                  showSearch
+                  options={remoteTables
+                    .filter(t => !exportTokenSel || (t.token_config_id || 0) === Number(exportTokenSel))
+                    .map(t => ({ value: t.id, label: t.name }))}
                   onChange={onSelectRemoteTable} allowClear />
               </Form.Item>
             </Col>
+          </Row>
+          <Row gutter={16}>
             <Col xs={24} sm={8}>
               <Form.Item label="PG 数据源" name="pg_source_id" rules={[{ required: true }]}>
                 <Select placeholder="选择数据库" options={pgSources.map(s => ({ value: s.id, label: s.name }))}
                   onChange={val => { onSelectPgSource(val); form.setFieldsValue({ target_table: undefined, temp_password: undefined }); }} />
               </Form.Item>
             </Col>
-          </Row>
-          <Row gutter={16}>
             <Col xs={24} sm={8}>
               <Form.Item
                 label="目标数据库"
@@ -1083,19 +1124,17 @@ const DataSync: React.FC = () => {
                   onChange={onSelectTargetTable} showSearch />
               </Form.Item>
             </Col>
-            <Col xs={24} sm={8}>
-              <Row gutter={8}>
-                <Col span={12}>
-                  <Form.Item label="每页条数" name="per_page">
-                    <Select options={[50, 100, 200, 500, 1000].map(n => ({ value: n, label: String(n) }))} />
-                  </Form.Item>
-                </Col>
-                <Col span={12}>
-                  <Form.Item label="起始页" name="page">
-                    <Input type="number" min={1} />
-                  </Form.Item>
-                </Col>
-              </Row>
+          </Row>
+          <Row gutter={16}>
+            <Col xs={12} sm={8}>
+              <Form.Item label="每页条数" name="per_page">
+                <Select options={[50, 100, 200, 500, 1000].map(n => ({ value: n, label: String(n) }))} />
+              </Form.Item>
+            </Col>
+            <Col xs={12} sm={8}>
+              <Form.Item label="起始页" name="page">
+                <Input type="number" min={1} />
+              </Form.Item>
             </Col>
           </Row>
         </Form>

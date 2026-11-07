@@ -10,7 +10,8 @@ import axios from 'axios';
 import { fetchAccessTokenFor, fetchDataFromApi, getValidTokenFor, QueryParams } from '../services/apiService';
 import {
   listRemoteTables, getRemoteTable, createRemoteTable, updateRemoteTable, deleteRemoteTable,
-  listTokenConfigs, getTokenConfigById, createTokenConfig, updateTokenConfig, deleteTokenConfig, countRemoteTablesByTokenConfig
+  listTokenConfigs, getTokenConfigById, createTokenConfig, updateTokenConfig, deleteTokenConfig, countRemoteTablesByTokenConfig,
+  updateRemoteTableRecordCount
 } from '../db/sqlite';
 import { Pool } from 'pg';
 import {
@@ -413,6 +414,45 @@ router.get('/config/remote-tables/:id/fields', async (ctx) => {
     ctx.body = { success: true, data: fields };
   } catch (err: any) {
     ctx.body = { success: false, message: err.message || String(err) };
+  }
+});
+
+// 获取单表数据量(带该表配置的默认查询条件,与同步口径一致;per_page=1 只取 total),结果写入缓存列
+router.get('/config/remote-tables/:id/count', async (ctx) => {
+  const t = await getRemoteTable(parseInt(ctx.params.id));
+  if (!t) { ctx.body = { success: false, message: '未找到表配置' }; return; }
+
+  try {
+    // 构建与同步一致的查询条件(表的默认条件/逻辑/排序)
+    let queryParams: QueryParams | undefined;
+    try {
+      const conds = t.conditions ? JSON.parse(t.conditions) : [];
+      if (Array.isArray(conds) && conds.length > 0) {
+        queryParams = {
+          conditions: conds,
+          logic: (t.logic as 'and' | 'or') || 'and',
+          page: 1,
+          perPage: 1,
+          orderField: t.order_field || '',
+          orderDir: (t.order_dir as 'asc' | 'desc') || 'asc',
+        };
+      }
+    } catch { /* 条件解析失败则按无条件全表统计 */ }
+
+    const result = await fetchDataFromApi(queryParams, t.data_api_url, t.token_config_id);
+    if (!result.success || !result.data) {
+      ctx.body = { success: false, message: result.message };
+      return;
+    }
+    const count = result.data.total;
+    await updateRemoteTableRecordCount(t.id, count);
+    const now = new Date();
+    const pad2 = (n: number) => String(n).padStart(2, '0');
+    const updatedAt = `${now.getFullYear()}-${pad2(now.getMonth() + 1)}-${pad2(now.getDate())} ${pad2(now.getHours())}:${pad2(now.getMinutes())}:${pad2(now.getSeconds())}`;
+    ctx.body = { success: true, data: { count, updated_at: updatedAt } };
+  } catch (err: any) {
+    const errMsg = err.response?.data ? JSON.stringify(err.response.data).slice(0, 300) : err.message;
+    ctx.body = { success: false, message: errMsg };
   }
 });
 

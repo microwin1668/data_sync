@@ -410,17 +410,23 @@ function buildSyncRequestBody(token: string, syncCfg: any, extra?: Record<string
   try { conditions = JSON.parse(syncCfg.conditions || '[]'); } catch {}
   if (conditions.length === 0) return body;
 
+  // 比较类运算符:纯数字字符串自动转数值(部分接口的数字字段不接受字符串比较)
+  const coerceNum = (v: string): any => {
+    const s = (v ?? '').trim();
+    return /^-?\d+(\.\d+)?$/.test(s) ? Number(s) : v;
+  };
+
   function condToExpr(c: any): Record<string, unknown> {
     switch (c.operator) {
       case 'eq': return { [c.field]: c.value };
       case 'like': return { [c.field]: '%%' + (c.value || '').replace(/%%/g, '') + '%%' };
-      case 'gt': return { [c.field]: { gt: c.value } };
-      case 'gte': return { [c.field]: { gte: c.value } };
-      case 'lt': return { [c.field]: { lt: c.value } };
-      case 'lte': return { [c.field]: { lte: c.value } };
+      case 'gt': return { [c.field]: { gt: coerceNum(c.value) } };
+      case 'gte': return { [c.field]: { gte: coerceNum(c.value) } };
+      case 'lt': return { [c.field]: { lt: coerceNum(c.value) } };
+      case 'lte': return { [c.field]: { lte: coerceNum(c.value) } };
       case 'between': {
         const parts = (c.value || '').split(',').map((s: string) => s.trim());
-        return parts.length >= 2 ? { [c.field]: { gte: parts[0], lte: parts[1] } } : { [c.field]: c.value };
+        return parts.length >= 2 ? { [c.field]: { gte: coerceNum(parts[0]), lte: coerceNum(parts[1]) } } : { [c.field]: c.value };
       }
       case 'in': return { [c.field]: { in: (c.value || '').split(',').map((s: string) => s.trim()) } };
       case 'neq': return { [c.field]: { neq: c.value } };
@@ -508,7 +514,13 @@ async function upsertRecords(
       success++;
     } catch (e: any) {
       error++;
-      const errMsg = e.message || String(e);
+      let errMsg = e.message || String(e);
+      // 常见 upsert 报错的中文解释,便于定位配置问题
+      if (/no unique or exclusion constraint/i.test(errMsg)) {
+        errMsg += ' —— 目标表缺少与主键匹配的唯一约束/主键: 请在数据库为该表添加,或在字段映射中勾选与表约束一致的主键字段';
+      } else if (/violates foreign key constraint/i.test(errMsg)) {
+        errMsg += ' —— 外键约束冲突: 提供的关联字段值在关联表中不存在';
+      }
       // 记录每条失败数据
       const failedItem: Record<string, any> = {};
       for (const s of importSettings) {

@@ -115,6 +115,8 @@ export async function initDb(): Promise<Database.Database> {
   // remote_tables 挂到所属 token 配置
   tryMigrateTable("remote_tables", [
     { name: "token_config_id", def: "INTEGER DEFAULT 0" },
+    { name: "record_count", def: "INTEGER DEFAULT -1" },
+    { name: "record_count_updated_at", def: "TEXT DEFAULT ''" },
   ]);
 
   // 自动迁移:首次升级时,把旧单例 configs 的 Token 转为一条「默认配置」,并把已有远程表归入
@@ -535,6 +537,8 @@ export interface RemoteTable {
   name: string;
   data_api_url: string;
   token_config_id: number;
+  record_count: number;
+  record_count_updated_at: string;
   conditions: string;
   logic: string;
   page: number;
@@ -555,6 +559,8 @@ function rowToRemoteTable(row: Record<string, any>): RemoteTable {
     name: String(get('name')),
     data_api_url: String(get('data_api_url')),
     token_config_id: Number(get('token_config_id')) || 0,
+    record_count: Number(get('record_count')),
+    record_count_updated_at: String(get('record_count_updated_at')),
     conditions: String(get('conditions')),
     logic: String(get('logic')),
     page: Number(get('page')) || 1,
@@ -675,6 +681,14 @@ export async function countRemoteTablesByTokenConfig(id: number): Promise<number
   await initDb();
   const row = db.prepare('SELECT COUNT(*) as cnt FROM remote_tables WHERE token_config_id=?').get(id) as any;
   return Number(row?.cnt) || 0;
+}
+
+/** 更新远程表数据量缓存 */
+export async function updateRemoteTableRecordCount(id: number, count: number): Promise<void> {
+  await initDb();
+  db.prepare(
+    "UPDATE remote_tables SET record_count=?, record_count_updated_at=datetime('now','localtime'), updated_at=updated_at WHERE id=?"
+  ).run(count, id);
 }
 
 // ========== Sync Configs ==========

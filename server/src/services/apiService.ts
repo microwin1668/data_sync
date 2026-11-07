@@ -182,6 +182,12 @@ function buildRequestBody(token: string, params: QueryParams): Record<string, un
 
   if (params.conditions.length === 0) return body;
 
+  // 比较类运算符:纯数字字符串自动转数值(部分接口的数字字段不接受字符串比较)
+  const coerceNum = (v: string): any => {
+    const s = (v ?? '').trim();
+    return /^-?\d+(\.\d+)?$/.test(s) ? Number(s) : v;
+  };
+
   // 把每个条件转为 API 认识的表达方式
   function condToExpr(c: QueryCondition): Record<string, unknown> {
     switch (c.operator) {
@@ -192,17 +198,17 @@ function buildRequestBody(token: string, params: QueryParams): Record<string, un
         const likeVal = c.value.replace(/%%/g, '');  // 防止用户重复加 %%
         return { [c.field]: '%%' + likeVal + '%%' };
       case 'gt':
-        return { [c.field]: { gt: c.value } };
+        return { [c.field]: { gt: coerceNum(c.value) } };
       case 'gte':
-        return { [c.field]: { gte: c.value } };
+        return { [c.field]: { gte: coerceNum(c.value) } };
       case 'lt':
-        return { [c.field]: { lt: c.value } };
+        return { [c.field]: { lt: coerceNum(c.value) } };
       case 'lte':
-        return { [c.field]: { lte: c.value } };
+        return { [c.field]: { lte: coerceNum(c.value) } };
       case 'between': {
         const parts = c.value.split(',').map(s => s.trim());
         if (parts.length >= 2) {
-          return { [c.field]: { gte: parts[0], lte: parts[1] } };
+          return { [c.field]: { gte: coerceNum(parts[0]), lte: coerceNum(parts[1]) } };
         }
         return { [c.field]: c.value };
       }
@@ -321,6 +327,15 @@ export async function fetchDataFromApi(
     );
 
     const raw = response.data;
+
+    // 业务错误码检测:接口返回明确失败码时直接报错(如 20013 查询结果为空 / 99999 参数异常),
+    // message 与 description 一并拼入,避免丢失关键诊断信息
+    const bizCode = raw && typeof raw === 'object' ? Number(raw.code) : undefined;
+    if (bizCode !== undefined && ![10000, 0, 200].includes(bizCode)) {
+      const reason = [raw.message, raw.description].filter(Boolean).join(' | ') || '未知业务错误';
+      return { success: false, message: `接口返回 ${bizCode}: ${reason}` };
+    }
+
     const { dataStruct, page, perPage, total, records } = parseApiResponse(raw);
 
     // 去除元数据字段

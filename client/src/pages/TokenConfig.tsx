@@ -474,6 +474,7 @@ const ExportImportTab: React.FC = () => {
     ]);
     const get = (i: number): any[] => r[i].status === 'fulfilled' ? ((r[i] as any).value?.data || []) : [];
     const tokenList = get(0), pgList = get(1), rtList = get(2), scList = get(3), stList = get(4), bcList = get(5), fbList = get(6);
+    setPgSources(pgList as PgDatasource[]);
     setCounts({
       token: tokenList.length, pg_sources: pgList.length, remote_tables: rtList.length,
       sync_configs: scList.length, sync_tasks: stList.length, backup_configs: bcList.length,
@@ -502,6 +503,9 @@ const ExportImportTab: React.FC = () => {
   const [filePreview, setFilePreview] = useState<PreviewGroup[] | null>(null);
   const [previewTotal, setPreviewTotal] = useState(0);
   const [checked, setChecked] = useState<Record<string, boolean>>({});
+  const [pgSources, setPgSources] = useState<PgDatasource[]>([]);
+  const [filePgIds, setFilePgIds] = useState<number[]>([]);
+  const [pgMapping, setPgMapping] = useState<Record<string, number>>({});
 
   useEffect(() => {
     const data = parseConfigJson(exportData);
@@ -532,6 +536,14 @@ const ExportImportTab: React.FC = () => {
       data.file_backup_configs.map((f: any) => ({ id: f.id, label: f.name || '(未命名)', detail: `${f.ssh_user || ''}@${f.ssh_host || ''}:${f.remote_dir || ''} → ${f.local_dir || ''}`, raw: f })));
     setFilePreview(groups.length ? groups : null);
     setPreviewTotal(total);
+    // 提取数据导入配置引用的源数据源 id,用于"目标数据源映射"
+    const pgIds = new Set<number>();
+    if (Array.isArray(data.sync_configs)) {
+      for (const c of data.sync_configs) {
+        if ((c.pg_source_id || 0) > 0) pgIds.add(Number(c.pg_source_id));
+      }
+    }
+    setFilePgIds(Array.from(pgIds));
     const ck: Record<string, boolean> = {};
     for (const g of groups) for (const it of g.items) ck[`${g.fileKey}:${it.id}`] = true;
     setChecked(ck);
@@ -544,6 +556,18 @@ const ExportImportTab: React.FC = () => {
   const itemLabel = (fileKey: string, id: number): string => {
     const g = filePreview?.find(x => x.fileKey === fileKey);
     return g?.items.find(i => i.id === id)?.label || `#${id}`;
+  };
+
+  // 数据源映射后的当前系统数据源名(供清单明细展示)
+  const mappedPgName = (rawId: any): string => {
+    const targetId = Number(pgMapping[String(rawId)] ?? pgSources[0]?.id ?? rawId);
+    const s = pgSources.find(x => x.id === targetId);
+    return s ? s.name : `数据源#${rawId}`;
+  };
+  const fileRtName = (rawId: any): string => {
+    const g = filePreview?.find(x => x.fileKey === 'remote_tables');
+    const found = g?.items.find(i => i.id === Number(rawId));
+    return found ? found.label : `表#${rawId}`;
   };
 
   /** 谁在引用(fileKey, id):仅统计当前已勾选的项 */
@@ -586,7 +610,14 @@ const ExportImportTab: React.FC = () => {
     if (!data || !filePreview) return null;
     const out: Record<string, any[]> = {};
     for (const g of filePreview) {
-      const kept = g.items.filter(it => isChecked(g.fileKey, it.id)).map(it => it.raw);
+      let kept = g.items.filter(it => isChecked(g.fileKey, it.id)).map(it => it.raw);
+      // 数据导入配置:应用"目标数据源映射"(文件中的旧数据源 id → 当前系统所选数据源)
+      if (g.fileKey === 'sync_configs') {
+        kept = kept.map(raw => {
+          const target = pgMapping[String(raw.pg_source_id)] ?? pgSources[0]?.id ?? raw.pg_source_id;
+          return { ...raw, pg_source_id: Number(target) || raw.pg_source_id };
+        });
+      }
       if (kept.length > 0) out[g.fileKey] = kept;
     }
     return Object.keys(out).length > 0 ? out : null;
@@ -598,7 +629,7 @@ const ExportImportTab: React.FC = () => {
     if (!filtered) { message.warning('请先选择 JSON 文件或粘贴配置数据'); return; }
     const n = countChecked();
     if (n === 0) { message.warning('请至少勾选一项要导入的内容'); return; }
-    const report = validateImportData(filtered);
+    const report = validateImportData(filtered, { pgMapped: filePgIds.length > 0 });
     const errs = report.items.filter(i => i.status === 'error');
     const warns = report.items.filter(i => i.status === 'warn');
     if (errs.length > 0) { message.error(`校验未通过: ${errs[0].label} — ${errs[0].detail}`); return; }
@@ -684,8 +715,8 @@ const ExportImportTab: React.FC = () => {
     finally { setExporting(false); }
   };
 
-  /** 校验导入数据:结构、数量、引用完整性、与当前系统的覆盖冲突 */
-  const validateImportData = (data: any): { items: ValidationItem[]; total: number } => {
+  /** 校验导入数据:结构、数量、引用完整性、与当前系统的覆盖冲突(可传入数据源映射状态) */
+  const validateImportData = (data: any, opts?: { pgMapped?: boolean }): { items: ValidationItem[]; total: number } => {
     const items: ValidationItem[] = [];
     let total = 0;
     const fileArr = (key: string): any[] | null => {
@@ -733,7 +764,10 @@ const ExportImportTab: React.FC = () => {
     if (scArr) {
       const missingPg = scArr.filter((c: any) => (c.pg_source_id || 0) > 0 && pgSet && !pgSet.has(Number(c.pg_source_id)));
       const missingRt = scArr.filter((c: any) => (c.remote_table_id || 0) > 0 && rtSet && !rtSet.has(Number(c.remote_table_id)));
-      if (!pgSet) items.push({ status: 'warn', label: '引用检查 · 导入配置 → PG 数据源', detail: '文件未包含 PG 数据源,请确认目标系统已存在对应数据源,否则导入的配置将无法执行' });
+      if (!pgSet) {
+        if (opts?.pgMapped) items.push({ status: 'ok', label: '引用检查 · 导入配置 → PG 数据源', detail: '已映射到当前系统所选数据源' });
+        else items.push({ status: 'warn', label: '引用检查 · 导入配置 → PG 数据源', detail: '文件未包含 PG 数据源,请确认目标系统已存在对应数据源,否则导入的配置将无法执行' });
+      }
       else if (missingPg.length > 0) items.push({ status: 'warn', label: '引用检查 · 导入配置 → PG 数据源', detail: `${missingPg.length} 条配置引用的 PG 数据源不在文件内` });
       else items.push({ status: 'ok', label: '引用检查 · 导入配置 → PG 数据源', detail: '全部引用完整' });
       if (!rtSet) items.push({ status: 'warn', label: '引用检查 · 导入配置 → 远程表', detail: '文件未包含远程数据表,请确认目标系统已存在对应表配置' });
@@ -868,6 +902,25 @@ const ExportImportTab: React.FC = () => {
                 {jsonViewMode ? '返回可视化' : '查看 JSON 原文'}
               </Button>
             </div>
+            {/* 目标数据源映射:文件中的数据导入配置指向旧系统数据源,导入时重定向到当前系统所选数据源 */}
+            {filePgIds.length > 0 && filePreview.some(g => g.fileKey === 'sync_configs') && (
+              <div style={{ marginBottom: 10, padding: '8px 12px', background: '#f0f5ff', border: '1px solid #adc6ff', borderRadius: 6 }}>
+                <div style={{ fontSize: 12, fontWeight: 600, color: '#2f54eb', marginBottom: 6 }}>
+                  🎯 数据导入配置的目标数据源映射 <Text type="secondary" style={{ fontWeight: 400 }}>(导入时自动重定向,默认第一条)</Text>
+                </div>
+                {filePgIds.map(fid => (
+                  <div key={fid} style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4, fontSize: 13 }}>
+                    <span>文件中的 数据源#{fid} → 导入到</span>
+                    <Select size="small" style={{ minWidth: 240 }} showSearch
+                      placeholder="选择当前系统的数据源"
+                      value={pgMapping[String(fid)] ?? pgSources[0]?.id}
+                      options={pgSources.map(s => ({ value: s.id, label: `${s.name}${s.database ? ` (${s.database})` : ''}` }))}
+                      onChange={v => setPgMapping(prev => ({ ...prev, [String(fid)]: v }))} />
+                    <Text type="secondary" style={{ fontSize: 12 }}>({pgSources.find(x => x.id === (pgMapping[String(fid)] ?? pgSources[0]?.id))?.host || '-'})</Text>
+                  </div>
+                ))}
+              </div>
+            )}
             {!jsonViewMode && (
               <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
                 {filePreview.map(g => (
@@ -882,7 +935,11 @@ const ExportImportTab: React.FC = () => {
                             style={{ marginTop: 2 }} />
                           <div style={{ flex: 1, minWidth: 0 }}>
                             <Text strong style={{ fontSize: 13 }}>{it.label}</Text>
-                            {it.detail && <Text type="secondary" style={{ fontSize: 12, marginLeft: 8, wordBreak: 'break-all' }}>{it.detail}</Text>}
+                            <Text type="secondary" style={{ fontSize: 12, marginLeft: 8, wordBreak: 'break-all' }}>
+                              {g.fileKey === 'sync_configs'
+                                ? `→ ${mappedPgName(it.raw?.pg_source_id)} · 表 ${fileRtName(it.raw?.remote_table_id)}`
+                                : it.detail}
+                            </Text>
                           </div>
                         </div>
                       );

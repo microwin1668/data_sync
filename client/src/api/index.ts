@@ -131,6 +131,8 @@ export interface RemoteTable {
   name: string;
   data_api_url: string;
   token_config_id: number;
+  record_count: number;
+  record_count_updated_at: string;
   conditions: string;
   logic: string;
   page: number;
@@ -148,6 +150,11 @@ export async function listRemoteTables(): Promise<{ success: boolean; data: Remo
 
 export async function getRemoteTableFields(id: number): Promise<{ success: boolean; data: { name: string; description: string }[] }> {
   const res = await api.get('/config/remote-tables/' + id + '/fields');
+  return res.data;
+}
+
+export async function fetchRemoteTableCount(id: number): Promise<{ success: boolean; data?: { count: number; updated_at: string }; message?: string }> {
+  const res = await api.get('/config/remote-tables/' + id + '/count', { timeout: 60000 });
   return res.data;
 }
 
