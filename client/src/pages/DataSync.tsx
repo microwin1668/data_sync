@@ -77,6 +77,14 @@ const DataSync: React.FC = () => {
   const [copyLoadingDb, setCopyLoadingDb] = useState(false);
   const [copyLoadingTables, setCopyLoadingTables] = useState(false);
   const [copyRequirePassword, setCopyRequirePassword] = useState(false);
+
+  // 批量复制弹窗
+  const [batchCopyOpen, setBatchCopyOpen] = useState(false);
+  const [batchCopyForm] = Form.useForm();
+  const [batchSaving, setBatchSaving] = useState(false);
+  const [batchDatabases, setBatchDatabases] = useState<string[]>([]);
+  const [batchLoadingDb, setBatchLoadingDb] = useState(false);
+  const [batchRequirePassword, setBatchRequirePassword] = useState(false);
   const [form] = Form.useForm();
   const [fields, setFields] = useState<FieldMapping[]>([newField()]);
   const [pgTables, setPgTables] = useState<string[]>([]);
@@ -383,6 +391,70 @@ const DataSync: React.FC = () => {
       if (err.errorFields) return;
       message.error('复制失败: ' + (err.message || ''));
     } finally { setCopySaving(false); }
+  };
+
+  const fetchBatchDatabases = async (sourceId: number, password?: string) => {
+    setBatchLoadingDb(true);
+    try {
+      const res = await getPgSourceDatabases(sourceId, password);
+      if (res.success) setBatchDatabases(res.data || []);
+      else { message.warning('获取数据库列表失败: ' + (res.message || '')); setBatchDatabases([]); }
+    } catch { setBatchDatabases([]); }
+    finally { setBatchLoadingDb(false); }
+  };
+
+  const openBatchCopy = () => {
+    if (selectedKeys.length === 0) { message.warning('请先勾选要复制的配置'); return; }
+    batchCopyForm.resetFields();
+    setBatchDatabases([]);
+    setBatchRequirePassword(false);
+    setBatchCopyOpen(true);
+  };
+
+  const handleBatchPgSourceChange = (sourceId: number) => {
+    const src = pgSources.find(s => s.id === sourceId);
+    setBatchRequirePassword(!!src && !src.password);
+    batchCopyForm.setFieldsValue({ target_database: src?.database || undefined, temp_password: undefined });
+    setBatchDatabases([]);
+    if (src && src.password) fetchBatchDatabases(sourceId);
+    else setBatchDatabases([]);
+  };
+
+  // 批量复制:选中配置全部复制到目标数据源/数据库,同名表与全部映射/条件原样保留
+  const handleBatchCopySave = async () => {
+    const values = await batchCopyForm.validateFields();
+    const selected = configs.filter(c => selectedKeys.includes(c.id));
+    if (selected.length === 0) { message.warning('请先勾选要复制的配置'); return; }
+    setBatchSaving(true);
+    let okCount = 0;
+    const failedNames: string[] = [];
+    for (const cfg of selected) {
+      try {
+        await createSyncConfig({
+          name: cfg.name,
+          remote_table_id: cfg.remote_table_id,
+          pg_source_id: values.pg_source_id,
+          target_database: (values.target_database || '').trim(),
+          target_table: cfg.target_table,
+          target_pk: cfg.target_pk || '',
+          page: cfg.page || 1,
+          per_page: cfg.per_page || 200,
+          import_settings: cfg.import_settings,
+          all_import: cfg.all_import || 0,
+          conditions: cfg.conditions,
+          logic: cfg.logic,
+          order_field: cfg.order_field || '',
+          order_dir: cfg.order_dir || 'asc',
+        });
+        okCount++;
+      } catch { failedNames.push(cfg.name); }
+    }
+    setBatchSaving(false);
+    if (failedNames.length === 0) message.success(`已批量复制 ${okCount} 个配置`);
+    else message.warning(`复制完成: 成功 ${okCount} 个,失败 ${failedNames.length} 个(${failedNames.join('、')})`);
+    setBatchCopyOpen(false);
+    setSelectedKeys([]);
+    loadAll();
   };
 
   const addField = () => setFields(prev => [...prev, newField()]);
@@ -777,9 +849,14 @@ const DataSync: React.FC = () => {
           <div style={{ marginBottom: 16, display: 'flex', gap: 8, alignItems: 'center' }}>
             <Button type="primary" icon={<PlusOutlined />} onClick={openAdd} style={{ marginBottom: 16 }}>新增导入配置</Button>
             {selectedKeys.length > 0 && (
-              <Button danger icon={<DeleteOutlined />} onClick={handleBatchDelete}>
-                批量删除 ({selectedKeys.length})
-              </Button>
+              <>
+                <Button icon={<CopyOutlined />} onClick={openBatchCopy} style={{ marginBottom: 16 }}>
+                  批量复制 ({selectedKeys.length})
+                </Button>
+                <Button danger icon={<DeleteOutlined />} onClick={handleBatchDelete} style={{ marginBottom: 16 }}>
+                  批量删除 ({selectedKeys.length})
+                </Button>
+              </>
             )}
           </div>
           {(() => {
@@ -1329,6 +1406,52 @@ const DataSync: React.FC = () => {
               </Form.Item>
             </Col>
           </Row>
+        </Form>
+      </Modal>
+
+      {/* 批量复制弹窗 */}
+      <Modal title={<>批量复制 <Text type="secondary">(已选 {selectedKeys.length} 个配置)</Text></>}
+        open={batchCopyOpen} onOk={handleBatchCopySave} onCancel={() => setBatchCopyOpen(false)}
+        okText={`全部复制 (${selectedKeys.length})`} cancelText="取消" confirmLoading={batchSaving} width={560} maskClosable={false}>
+        <div style={{ marginBottom: 12, padding: '6px 10px', borderRadius: 4, background: '#e6f7ff', border: '1px solid #91d5ff', fontSize: 12, color: '#1890ff' }}>
+          ⓘ 选中的配置将全部复制到目标数据源/数据库:配置名、目标表名、字段映射、查询条件、每页条数等<b>全部原样保留</b>,仅替换目标位置
+        </div>
+        <Form form={batchCopyForm} layout="vertical">
+          <Form.Item label="目标数据源" name="pg_source_id" rules={[{ required: true, message: '请选择目标数据源' }]}>
+            <Select placeholder="选择目标数据源" showSearch
+              options={pgSources.map(s => ({ value: s.id, label: s.name }))}
+              onChange={handleBatchPgSourceChange} />
+          </Form.Item>
+          <Form.Item label="目标数据库" required style={{ marginBottom: 0 }}>
+            <div style={{ display: 'flex', gap: 8 }}>
+              <Form.Item name="target_database" noStyle rules={[{ required: true, message: '请选择目标数据库' }]}>
+                <Select showSearch allowClear placeholder="选择目标数据库"
+                  loading={batchLoadingDb}
+                  options={batchDatabases.map(db => ({ value: db, label: db }))}
+                  style={{ flex: 1 }} />
+              </Form.Item>
+              <Button icon={<ReloadOutlined />} loading={batchLoadingDb}
+                title="刷新数据库列表"
+                onClick={() => {
+                  const sourceId = batchCopyForm.getFieldValue('pg_source_id');
+                  const pwd = batchCopyForm.getFieldValue('temp_password');
+                  if (sourceId) fetchBatchDatabases(sourceId, pwd);
+                  else message.warning('请先选择目标数据源');
+                }} />
+            </div>
+          </Form.Item>
+          {batchRequirePassword && (
+            <Form.Item label="临时连接密码" name="temp_password"
+              extra="该数据源未配置密码,输入后点击刷新按钮获取数据库列表">
+              <Input.Password placeholder="请输入 PostgreSQL 数据库密码"
+                autoComplete="new-password"
+                onBlur={(e) => {
+                  const val = e.target.value;
+                  const sourceId = batchCopyForm.getFieldValue('pg_source_id');
+                  if (sourceId && val) fetchBatchDatabases(sourceId, val);
+                }} />
+            </Form.Item>
+          )}
         </Form>
       </Modal>
 
