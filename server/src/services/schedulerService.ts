@@ -1,9 +1,12 @@
 import {
   listSyncTasks, getSyncTask, getSyncConfig, updateTaskRunTime,
   listSyncConfigs, createTaskExecutionLog, updateTaskExecutionLog, getBackupConfig, listBackupConfigs,
+  getFileBackupConfig,
 } from '../db/sqlite';
 import { executeSyncImportStream } from './syncService';
 import { runBackup, getBackupProgress, startBackupProgressMonitor, stopBackupProgressMonitor } from './backupService';
+import { runFileBackup, getFileBackupProgress, startFileBackupProgressMonitor, stopFileBackupProgressMonitor } from './fileBackupService';
+import { notifyTaskFailure } from './notifyService';
 import { saveFailedRecords } from '../utils/logUtils';
 
 interface RunningTask {
@@ -13,6 +16,53 @@ interface RunningTask {
 
 const runningTimers: Map<number, RunningTask> = new Map();
 let schedulerInterval: NodeJS.Timeout | null = null;
+
+// ========== 全局串行执行队列 ==========
+// 同一时刻只执行一个定时任务（含备份任务），任务按 sync_tasks.sort_order 升序依次排队执行
+const taskQueue: number[] = [];        // 待执行的任务 ID 队列
+let queueRunning = false;              // 队列是否正在消费
+const queuedIds = new Set<number>();   // 队列去重
+
+/**
+ * 将任务加入执行队列并触发消费
+ */
+function enqueueTask(taskId: number): void {
+  if (queuedIds.has(taskId)) return;
+  queuedIds.add(taskId);
+  taskQueue.push(taskId);
+  drainQueue();
+}
+
+/**
+ * 依次消费队列中的任务（串行，前一个完成后才执行下一个）
+ */
+async function drainQueue(): Promise<void> {
+  if (queueRunning) return;
+  queueRunning = true;
+  try {
+    while (taskQueue.length > 0) {
+      const taskId = taskQueue.shift()!;
+      queuedIds.delete(taskId);
+      try {
+        // 排队期间任务可能被编辑/禁用/删除，执行前重新读取
+        const task = await getSyncTask(taskId);
+        if (!task) {
+          console.log(`[Scheduler] 队列中的任务 #${taskId} 已不存在，跳过`);
+          continue;
+        }
+        if (!task.enabled) {
+          console.log(`[Scheduler] 队列中的任务 #${taskId}（${task.name}）已被禁用，跳过`);
+          continue;
+        }
+        await executeTask(task);
+      } catch (err: any) {
+        console.error(`[Scheduler] 队列任务 #${taskId} 执行异常:`, err.message);
+      }
+    }
+  } finally {
+    queueRunning = false;
+  }
+}
 
 /**
  * 初始化调度器，每分钟检查一次待执行的任务
@@ -28,12 +78,13 @@ export function startScheduler(): void {
       const pad2 = (n: number) => String(n).padStart(2, '0');
       const nowStr = now.getFullYear() + '-' + pad2(now.getMonth() + 1) + '-' + pad2(now.getDate()) + ' ' + pad2(now.getHours()) + ':' + pad2(now.getMinutes()) + ':' + pad2(now.getSeconds());
 
+      // listSyncTasks 已按 sort_order ASC, id ASC 排序，到点任务按此顺序入队
       for (const task of tasks) {
         if (!task.enabled || !task.next_run_at) continue;
         if (task.next_run_at <= nowStr) {
-          // 异步执行，不阻塞调度器
-          executeTask(task).catch(err => console.error(`[Scheduler] 任务 #${task.id} 执行异常:`, err));
-          // 更新下次执行时间
+          // 加入全局串行队列执行
+          enqueueTask(task.id);
+          // 更新下次执行时间（先写入，避免下一轮重复入队）
           const nextRun = calcNextRun(task);
           await updateTaskRunTime(task.id, nextRun);
         }
@@ -52,6 +103,8 @@ export function stopScheduler(): void {
     clearInterval(schedulerInterval);
     schedulerInterval = null;
   }
+  taskQueue.length = 0;
+  queuedIds.clear();
   for (const [id, rt] of runningTimers) {
     clearTimeout(rt.timer);
     runningTimers.delete(id);
@@ -75,7 +128,7 @@ function getConfigIds(task: { sync_config_ids: string; sync_config_id: number })
  * 执行任务（可能含多个同步配置）
  */
 async function executeTask(task: any): Promise<void> {
-  // 备份任务处理 - 创建执行日志并跟踪进度
+  // 数据库备份任务处理 - 创建执行日志并跟踪进度
   if (task.task_type === 'backup') {
     console.log(`[Scheduler] 执行备份任务 #${task.id}（${task.name}）`);
     const backupConfig = await getBackupConfig(task.backup_config_id);
@@ -96,7 +149,7 @@ async function executeTask(task: any): Promise<void> {
 
     try {
       // 启动备份（异步）
-      runBackup(backupConfig).catch(err => console.error('[Scheduler] 备份异常:', err));
+      runBackup(backupConfig, true).catch(err => console.error('[Scheduler] 备份异常:', err));
 
       // 使用共享的进度监视器更新执行日志
       startBackupProgressMonitor(task.backup_config_id, logId);
@@ -126,6 +179,57 @@ async function executeTask(task: any): Promise<void> {
     return;
   }
 
+  // 文件备份任务处理 - 创建执行日志并跟踪进度
+  if (task.task_type === 'file_backup') {
+    console.log(`[Scheduler] 执行文件备份任务 #${task.id}（${task.name}）`);
+    const fileConfig = await getFileBackupConfig(task.file_backup_config_id);
+    if (!fileConfig) {
+      console.log(`[Scheduler] 文件备份任务 #${task.id} 关联的配置 #${task.file_backup_config_id} 不存在`);
+      return;
+    }
+
+    const logId = await createTaskExecutionLog({
+      task_id: task.id,
+      task_name: task.name,
+      sync_config_id: task.file_backup_config_id || 0,
+      sync_config_name: fileConfig.name || '文件备份:' + task.file_backup_config_id,
+      target_table: `${fileConfig.ssh_user}@${fileConfig.ssh_host}:${fileConfig.remote_dir}`,
+      task_type: 'file_backup',
+      status: 'running',
+    });
+
+    try {
+      // 启动文件备份（异步）
+      runFileBackup(fileConfig, true).catch(err => console.error('[Scheduler] 文件备份异常:', err));
+
+      // 使用共享的进度监视器更新执行日志
+      startFileBackupProgressMonitor(task.file_backup_config_id, logId);
+
+      // 等待备份完成
+      await new Promise<void>((resolve) => {
+        const checkInterval = setInterval(async () => {
+          const prog = getFileBackupProgress(task.file_backup_config_id);
+          if (!prog) return;
+          if (prog.status === 'success' || prog.status === 'error') {
+            clearInterval(checkInterval);
+            stopFileBackupProgressMonitor(logId);
+            console.log(`[Scheduler] 文件备份任务 #${task.id}（${task.name}）${prog.status}`);
+            resolve();
+          }
+        }, 2000);
+      });
+      await new Promise(r => setTimeout(r, 1500));
+    } catch (err: any) {
+      stopFileBackupProgressMonitor(logId);
+      await updateTaskExecutionLog(logId, {
+        status: 'error',
+        error_message: err.message || '执行异常',
+      });
+      console.error(`[Scheduler] 文件备份任务 #${task.id} 失败:`, err.message);
+    }
+    return;
+  }
+
   const configIds = getConfigIds(task);
   console.log(`[Scheduler] 执行任务 #${task.id}（${task.name}），包含 ${configIds.length} 个同步配置`);
 
@@ -145,12 +249,13 @@ async function executeTask(task: any): Promise<void> {
       task_name: task.name,
       sync_config_id: cfgId,
       sync_config_name: cfg.name || String(cfgId),
-      target_table: cfg.target_table || '',
+      // 指定了目标库时附带库信息，便于多库场景区分日志
+      target_table: cfg.target_database ? `${cfg.target_database}.${cfg.target_table || ''}` : (cfg.target_table || ''),
       task_type: task.task_type || 'sync',
       status: 'running',
     });
 
-    console.log(`[Scheduler] 任务 #${task.id} 开始导入 ${cfg.name} -> ${cfg.target_table}`);
+    console.log(`[Scheduler] 任务 #${task.id} 开始导入 ${cfg.name} -> ${(cfg.target_database ? cfg.target_database + '.' : '') + (cfg.target_table || '')}`);
 
     let totalSuccess = 0, totalErrors = 0, totalRecords = 0;
     let logFilename = '';
@@ -185,11 +290,27 @@ async function executeTask(task: any): Promise<void> {
             log_filename: logFilename,
           });
           console.log(`[Scheduler] 任务 #${task.id} ${cfg.name} 完成: ${totalSuccess} 成功, ${totalErrors} 失败`);
+          // 全部记录导入失败(一条都没成功)时发送告警邮件;部分成功视为正常,不通知
+          if (totalSuccess === 0 && totalErrors > 0) {
+            notifyTaskFailure('sync', `task-${task.id}-${cfgId}`, `同步任务「${task.name}」全部记录导入失败`, [
+              ['任务名称', task.name || String(task.id)],
+              ['同步配置', cfg.name || String(cfgId)],
+              ['目标表', cfg.target_table || '-'],
+              ['失败记录数', String(totalErrors)],
+              ['日志文件', logFilename || '-'],
+            ]);
+          }
         } else if (event === 'error') {
           await updateTaskExecutionLog(logId, {
             status: 'error',
             error_message: data.message || '未知错误',
           });
+          notifyTaskFailure('sync', `task-${task.id}-${cfgId}`, `同步任务「${task.name}」执行失败`, [
+            ['任务名称', task.name || String(task.id)],
+            ['同步配置', cfg.name || String(cfgId)],
+            ['目标表', cfg.target_table || '-'],
+            ['错误信息', (data.message || '未知错误').slice(0, 2000)],
+          ]);
           console.error(`[Scheduler] 任务 #${task.id} ${cfg.name} 错误:`, data.message);
         } else if (event === 'cancelled') {
           totalSuccess = data.success || 0;
@@ -210,6 +331,11 @@ async function executeTask(task: any): Promise<void> {
         status: 'error',
         error_message: err.message || '执行异常',
       });
+      notifyTaskFailure('sync', `task-${task.id}-${cfgId}`, `同步任务「${task.name}」执行异常`, [
+        ['任务名称', task.name || String(task.id)],
+        ['同步配置', cfg.name || String(cfgId)],
+        ['错误信息', (err.message || '执行异常').slice(0, 2000)],
+      ]);
     }
   }
 
@@ -237,7 +363,7 @@ export async function executeTaskSync(task: any): Promise<{ success: boolean; me
       task_name: task.name,
       sync_config_id: cfgId,
       sync_config_name: cfg.name || String(cfgId),
-      target_table: cfg.target_table || '',
+      target_table: cfg.target_database ? `${cfg.target_database}.${cfg.target_table || ''}` : (cfg.target_table || ''),
       task_type: task.task_type || 'sync',
       status: 'running',
     });

@@ -4,7 +4,23 @@ import cors from 'koa-cors';
 import fs from 'fs';
 import path from 'path';
 import configRouter from './routes/config';
-import { initDb } from './db/sqlite';
+import { initDb, cleanupOldLogs } from './db/sqlite';
+import { notifyCrash } from './services/notifyService';
+
+// ========== 进程崩溃告警 ==========
+// 未捕获异常:先尝试发送告警邮件(带节流与超时保护),然后退出由 pm2 自动重启
+let crashHandled = false;
+async function handleFatalError(kind: string, err: any): Promise<void> {
+  if (crashHandled) return;
+  crashHandled = true;
+  console.error(`[Process] ${kind}:`, err);
+  try {
+    await notifyCrash(err);
+  } catch {}
+  process.exit(1);
+}
+process.on('uncaughtException', (err) => { void handleFatalError('未捕获异常', err); });
+process.on('unhandledRejection', (reason) => { void handleFatalError('未处理的 Promise 拒绝', reason); });
 
 const app = new Koa();
 const PORT = process.env.PORT || 3001;
@@ -54,6 +70,8 @@ app.use(configRouter.allowedMethods());
 
 async function start() {
   await initDb();
+  // 每天清理一次过期日志（initDb 启动时已清理过一次）
+  setInterval(() => cleanupOldLogs(), 24 * 60 * 60 * 1000);
   app.listen(PORT, () => {
     if (isProduction) {
       console.log('OK 数据同步服务已启动 (production): http://0.0.0.0:' + PORT);

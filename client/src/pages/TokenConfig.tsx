@@ -1,11 +1,11 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import {
-  Card, Form, Input, Button, Space, message, Alert, Typography, Tabs, Table, Modal, Tag, Popconfirm, Tooltip, Checkbox, Row, Col, Spin
+  Card, Form, Input, Button, Space, message, Alert, Typography, Tabs, Table, Modal, Tag, Popconfirm, Tooltip, Checkbox, Row, Col, Spin, Select, Switch, InputNumber, AutoComplete
 } from 'antd';
 import {
   KeyOutlined, SaveOutlined, SendOutlined, DatabaseOutlined,
   PlusOutlined, EditOutlined, DeleteOutlined, CheckCircleOutlined, CloseCircleOutlined,
-  LinkOutlined, ApiOutlined, ExportOutlined, ImportOutlined, DownloadOutlined, UploadOutlined,
+  LinkOutlined, ApiOutlined, ExportOutlined, ImportOutlined, DownloadOutlined, UploadOutlined, MailOutlined,
 } from '@ant-design/icons';
 import { JsonView, allExpanded, defaultStyles } from 'react-json-view-lite';
 import 'react-json-view-lite/dist/index.css';
@@ -13,6 +13,7 @@ import 'react-json-view-lite/dist/index.css';
 import {
   getTokenConfig, saveTokenConfig, fetchAccessToken, exportConfig, importConfig, clearConfig,
   listPgSources, createPgSource, updatePgSource, deletePgSource, testPgSourceConnection,
+  getEmailNotifyConfig, saveEmailNotifyConfig, sendNotifyTestEmail,
 } from '../api';
 import type { PgDatasource } from '../api';
 
@@ -531,6 +532,209 @@ const ExportImportTab: React.FC = () => {
   );
 };
 
+// ==================== 邮件告警 Tab ====================
+
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+// 常用 SMTP 服务器预设(支持手动输入其他地址)
+const SMTP_PRESETS = [
+  { value: 'smtp.qq.com', label: 'smtp.qq.com(QQ 邮箱)' },
+  { value: 'smtp.163.com', label: 'smtp.163.com(网易 163)' },
+  { value: 'smtp.126.com', label: 'smtp.126.com(网易 126)' },
+  { value: 'smtp.exmail.qq.com', label: 'smtp.exmail.qq.com(腾讯企业邮)' },
+  { value: 'smtp.qiye.aliyun.com', label: 'smtp.qiye.aliyun.com(阿里企业邮)' },
+  { value: 'smtp.gmail.com', label: 'smtp.gmail.com(Gmail)' },
+  { value: 'smtp.office365.com', label: 'smtp.office365.com(Microsoft 365)' },
+  { value: 'smtp.outlook.com', label: 'smtp.outlook.com(Outlook)' },
+];
+
+const EmailNotifyTab: React.FC = () => {
+  const [form] = Form.useForm();
+  const [loading, setLoading] = useState(false);
+  const [testing, setTesting] = useState(false);
+
+  useEffect(() => { loadConfig(); }, []);
+
+  const loadConfig = async () => {
+    try {
+      const res = await getEmailNotifyConfig();
+      if (res.success && res.data) {
+        const d = res.data;
+        form.setFieldsValue({
+          smtp_host: d.smtp_host,
+          smtp_port: Number(d.smtp_port) || 465,
+          encrypt: d.smtp_secure ? 'ssl' : (Number(d.smtp_port) === 25 ? 'none' : 'starttls'),
+          smtp_user: d.smtp_user,
+          smtp_password: d.smtp_password,
+          from_email: d.from_email,
+          recipients: String(d.recipients || '').split(/[,;，；\s]+/).filter(Boolean),
+          notify_backup_fail: !!d.notify_backup_fail,
+          notify_sync_fail: !!d.notify_sync_fail,
+          notify_crash: !!d.notify_crash,
+          notify_file_backup_fail: d.notify_file_backup_fail === undefined ? true : !!d.notify_file_backup_fail,
+          throttle_minutes: d.throttle_minutes,
+          crash_throttle_minutes: d.crash_throttle_minutes,
+        });
+      }
+    } catch (err: any) { message.error('加载邮件告警配置失败: ' + err.message); }
+  };
+
+  const handleEncryptChange = (v: string) => {
+    const portMap: Record<string, number> = { ssl: 465, starttls: 587, none: 25 };
+    const cur = form.getFieldValue('smtp_port');
+    // 端口还是默认值时跟随加密方式自动切换
+    if (!cur || cur === 465 || cur === 587 || cur === 25) {
+      form.setFieldsValue({ smtp_port: portMap[v] });
+    }
+  };
+
+  const handleSave = async () => {
+    try {
+      const values = await form.validateFields();
+      setLoading(true);
+      const res = await saveEmailNotifyConfig({
+        smtp_host: values.smtp_host,
+        smtp_port: values.smtp_port,
+        smtp_secure: values.encrypt === 'ssl' ? 1 : 0,
+        smtp_user: values.smtp_user,
+        smtp_password: values.smtp_password,
+        from_email: values.from_email || '',
+        recipients: (values.recipients || []).join(','),
+        notify_backup_fail: values.notify_backup_fail ? 1 : 0,
+        notify_sync_fail: values.notify_sync_fail ? 1 : 0,
+        notify_crash: values.notify_crash ? 1 : 0,
+        notify_file_backup_fail: values.notify_file_backup_fail ? 1 : 0,
+        throttle_minutes: values.throttle_minutes,
+        crash_throttle_minutes: values.crash_throttle_minutes,
+      });
+      if (res.success) message.success('邮件告警配置已保存');
+      else message.error(res.message);
+    } catch (err: any) {
+      if (err.errorFields) return;
+      message.error('保存失败: ' + err.message);
+    } finally { setLoading(false); }
+  };
+
+  const handleTest = async () => {
+    setTesting(true);
+    try {
+      const res = await sendNotifyTestEmail();
+      if (res.success) message.success(res.message);
+      else message.error(res.message);
+    } catch (err: any) {
+      message.error('请求失败: ' + err.message);
+    } finally { setTesting(false); }
+  };
+
+  return (
+    <div>
+      <Alert
+        type="info"
+        showIcon
+        style={{ marginBottom: 16, maxWidth: 700 }}
+        message="备份失败 / 同步失败 / 服务进程崩溃时,自动向以下收件人发送告警邮件(仅定时任务触发,手动执行不通知)"
+      />
+      <Form form={form} layout="vertical" style={{ maxWidth: 700 }}
+        initialValues={{ encrypt: 'ssl', smtp_port: 465, notify_backup_fail: true, notify_sync_fail: true, notify_crash: true, notify_file_backup_fail: true, throttle_minutes: 30, crash_throttle_minutes: 10 }}>
+        <Row gutter={16}>
+          <Col xs={24} sm={14}>
+            <Form.Item label="SMTP 服务器" name="smtp_host" rules={[{ required: true, message: '请输入 SMTP 服务器地址' }]}>
+              <AutoComplete
+                options={SMTP_PRESETS}
+                placeholder="下拉选择常用服务器,或直接输入自定义地址"
+                filterOption={(input, option) =>
+                  String(option?.value ?? '').toLowerCase().includes(input.toLowerCase())
+                }
+              />
+            </Form.Item>
+          </Col>
+          <Col xs={24} sm={10}>
+            <Form.Item label="加密方式" name="encrypt" rules={[{ required: true }]}>
+              <Select onChange={handleEncryptChange} options={[
+                { value: 'ssl', label: 'SSL/TLS (465)' },
+                { value: 'starttls', label: 'STARTTLS (587)' },
+                { value: 'none', label: '不加密 (25)' },
+              ]} />
+            </Form.Item>
+          </Col>
+        </Row>
+        <Row gutter={16}>
+          <Col xs={24} sm={10}>
+            <Form.Item label="端口" name="smtp_port" rules={[{ required: true, message: '请输入端口' }]}>
+              <InputNumber min={1} max={65535} style={{ width: '100%' }} />
+            </Form.Item>
+          </Col>
+          <Col xs={24} sm={14}>
+            <Form.Item label="发件人地址" name="from_email" extra="留空则使用 SMTP 账号作为发件人"
+              rules={[{ pattern: EMAIL_RE, message: '邮箱格式不正确' }]}>
+              <Input placeholder="可选,如 noreply@example.com" />
+            </Form.Item>
+          </Col>
+        </Row>
+        <Form.Item label="SMTP 账号(邮箱)" name="smtp_user" rules={[{ required: true, message: '请输入 SMTP 账号' }]}>
+          <Input placeholder="发件邮箱账号" />
+        </Form.Item>
+        <Form.Item label="SMTP 密码 / 授权码" name="smtp_password" rules={[{ required: true, message: '请输入 SMTP 密码或授权码' }]}
+          extra="QQ/163 等个人邮箱需使用授权码(非登录密码);企业邮箱通常为登录密码">
+          <Input.Password placeholder="密码或授权码" />
+        </Form.Item>
+        <Form.Item label="收件人邮箱(可添加多个)" name="recipients"
+          rules={[{ validator: (_: any, v: string[] = []) => {
+            if (!v || v.length === 0) return Promise.reject(new Error('请至少添加一个收件人'));
+            if (v.some((e: string) => !EMAIL_RE.test(e))) return Promise.reject(new Error('存在格式不正确的邮箱地址'));
+            return Promise.resolve();
+          } }]}>
+          <Select mode="tags" placeholder="输入邮箱后回车添加,可添加多个" open={false} suffixIcon={null}
+            tokenSeparators={[',', '，', ';', '；', ' ']} />
+        </Form.Item>
+        <Row gutter={16}>
+          <Col xs={24} sm={6}>
+            <Form.Item label="备份失败通知" name="notify_backup_fail" valuePropName="checked">
+              <Switch checkedChildren="开" unCheckedChildren="关" />
+            </Form.Item>
+          </Col>
+          <Col xs={24} sm={6}>
+            <Form.Item label="文件备份失败通知" name="notify_file_backup_fail" valuePropName="checked">
+              <Switch checkedChildren="开" unCheckedChildren="关" />
+            </Form.Item>
+          </Col>
+          <Col xs={24} sm={6}>
+            <Form.Item label="同步失败通知" name="notify_sync_fail" valuePropName="checked">
+              <Switch checkedChildren="开" unCheckedChildren="关" />
+            </Form.Item>
+          </Col>
+          <Col xs={24} sm={6}>
+            <Form.Item label="进程崩溃通知" name="notify_crash" valuePropName="checked">
+              <Switch checkedChildren="开" unCheckedChildren="关" />
+            </Form.Item>
+          </Col>
+        </Row>
+        <Row gutter={16}>
+          <Col xs={24} sm={12}>
+            <Form.Item label="失败告警间隔(分钟)" name="throttle_minutes"
+              extra="同一任务/配置的同类失败在该时间内只发一封,防轰炸"
+              rules={[{ required: true, message: '请输入间隔(1-1440 分钟)' }]}>
+              <InputNumber min={1} max={1440} style={{ width: '100%' }} />
+            </Form.Item>
+          </Col>
+          <Col xs={24} sm={12}>
+            <Form.Item label="崩溃告警间隔(分钟)" name="crash_throttle_minutes"
+              extra="进程重启风暴时在该时间内只发一封崩溃邮件"
+              rules={[{ required: true, message: '请输入间隔(1-1440 分钟)' }]}>
+              <InputNumber min={1} max={1440} style={{ width: '100%' }} />
+            </Form.Item>
+          </Col>
+        </Row>
+        <Space>
+          <Button type="primary" icon={<SaveOutlined />} onClick={handleSave} loading={loading}>保存配置</Button>
+          <Button icon={<SendOutlined />} onClick={handleTest} loading={testing}>发送测试邮件</Button>
+        </Space>
+        <div style={{ marginTop: 8, color: '#999', fontSize: 12 }}>「发送测试邮件」使用的是已保存的配置,请先保存再测试</div>
+      </Form>
+    </div>
+  );
+};
+
 // ==================== 主页面 ====================
 
 const TokenConfig: React.FC = () => {
@@ -549,6 +753,11 @@ const TokenConfig: React.FC = () => {
               key: 'pg',
               label: <span><DatabaseOutlined /> PostgreSQL 数据源</span>,
               children: <PgSourcesTab />,
+            },
+            {
+              key: 'notify',
+              label: <span><MailOutlined /> 邮件告警</span>,
+              children: <EmailNotifyTab />,
             },
             {
               key: 'io',

@@ -1,9 +1,10 @@
 import React, { useState, useEffect } from 'react';
 import { ConfigProvider, Layout, Menu, theme, Drawer, Button } from 'antd';
-import { KeyOutlined, EyeOutlined, TableOutlined, SwapOutlined, ClockCircleOutlined, CloudServerOutlined, UserOutlined, LogoutOutlined, MenuOutlined, FileExcelOutlined } from '@ant-design/icons';
+import { KeyOutlined, EyeOutlined, TableOutlined, SwapOutlined, ClockCircleOutlined, CloudServerOutlined, UserOutlined, LogoutOutlined, MenuOutlined, FileExcelOutlined, FolderOpenOutlined } from '@ant-design/icons';
 import TokenConfig from './pages/TokenConfig';
 import DataPreview from './pages/DataPreview';
 import BackupConfig from './pages/BackupConfig';
+import FileBackupConfig from './pages/FileBackupConfig';
 import TableConfig from './pages/TableConfig';
 import DataSync from './pages/DataSync';
 import TaskManager from './pages/TaskManager';
@@ -18,6 +19,7 @@ const menuItems = [
   { key: 'sync', icon: <SwapOutlined />, label: '数据导入配置' },
   { key: 'excel', icon: <FileExcelOutlined />, label: 'Excel导入' },
   { key: 'backup', icon: <CloudServerOutlined />, label: '数据库备份配置' },
+  { key: 'fileBackup', icon: <FolderOpenOutlined />, label: '文件备份配置' },
   { key: 'task', icon: <ClockCircleOutlined />, label: '任务管理' },
   { key: 'data', icon: <EyeOutlined />, label: '数据预览' },
 ];
@@ -78,6 +80,7 @@ const App: React.FC = () => {
       case 'sync': return <DataSync />;
       case 'excel': return <ExcelImport />;
       case 'backup': return <BackupConfig />;
+      case 'fileBackup': return <FileBackupConfig />;
       case 'task': return <TaskManager />;
       case 'data': return <DataPreview />;
       default: return <TokenConfig />;

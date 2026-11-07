@@ -12,3 +12,8 @@ logs/
 server/data/
 *.db
 
+
+# 工具工作目录
+.v2c/
+.video_agent/
+.zcode/

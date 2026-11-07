@@ -9,12 +9,13 @@ import JsonTreeViewer from './JsonTreeViewer';
 
 interface ConditionBuilderProps {
   value: QueryParams;
-  onChange: (params: QueryParams) => void;
-  // 字段名 → 中文描述映射，用于智能提示
+  onChange: (params: QueryParams) => void;  // 字段名 → 中文描述映射，用于智能提示
   knownFields?: Record<string, string>;
   onPreview?: () => Promise<{ records: any[]; rawResponse: any; total?: number } | void>;
   /** 是否正在预览 */
   previewLoading?: boolean;
+  /** 追加到分页/排序行末尾的扩展操作区(如按钮组) */
+  extra?: React.ReactNode;
 }
 
 const { TextArea } = Input;
@@ -33,7 +34,7 @@ const OPERATORS = [
 
 const defaultCondition: QueryCondition = { field: '', operator: 'eq', value: '' };
 
-const ConditionBuilder: React.FC<ConditionBuilderProps> = ({ value, onChange, knownFields = {}, onPreview }) => {
+const ConditionBuilder: React.FC<ConditionBuilderProps> = ({ value, onChange, knownFields = {}, onPreview, extra }) => {
   const [customFields, setCustomFields] = useState<string[]>([]);
   const [previewModalOpen, setPreviewModalOpen] = useState(false);
   const [previewRecords, setPreviewRecords] = useState<any[] | null>(null);
@@ -270,6 +271,7 @@ const ConditionBuilder: React.FC<ConditionBuilderProps> = ({ value, onChange, kn
               ]}
             />
           </Space>
+          {extra}
         </Space>
       </div>
     </Card>

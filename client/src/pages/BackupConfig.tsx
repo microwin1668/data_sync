@@ -2,19 +2,20 @@ import React, { useState, useEffect, useRef } from 'react';
 import {
   Card, Table, Button, Space, Modal, Form, Input, Select, message, Popconfirm,
   Tag, Typography, Badge, InputNumber, Alert, Progress, Spin, Tooltip,
-  Radio, Checkbox,
+  Radio, Checkbox, Upload,
 } from 'antd';
 import {
   LoadingOutlined, PlusOutlined, EditOutlined, DeleteOutlined, PlayCircleOutlined,
-  CloudServerOutlined, HistoryOutlined, DownloadOutlined, StopOutlined, InfoCircleOutlined, ReloadOutlined, SearchOutlined,
+  CloudServerOutlined, HistoryOutlined, DownloadOutlined, StopOutlined, InfoCircleOutlined, ReloadOutlined, SearchOutlined, UploadOutlined,
 } from '@ant-design/icons';
 import {
   listBackupConfigs, createBackupConfig, updateBackupConfig, deleteBackupConfig,
   runBackupNow, listBackupLogs, deleteBackupLogs, listPgSources, checkPgDump, installPgTools,
   stopBackup, getBackupProgress, getInstallProgress,
-  getPgSourceDatabases, getBackupLogTables, restoreBackupLog, getBackupRestoreProgress, stopBackupRestore,
+  getPgSourceDatabases, getBackupLogTables, uploadBackupRestoreFile, restoreBackupLog, getBackupRestoreProgress, stopBackupRestore,
 } from '../api';
 import type { BackupConfig, BackupLog, PgDatasource } from '../api';
+import type { UploadProps } from 'antd';
 
 const { Text } = Typography;
 
@@ -85,6 +86,9 @@ const BackupPage: React.FC = () => {
   const [configRequirePassword, setConfigRequirePassword] = useState(false);
   const [showRestoreButton, setShowRestoreButton] = useState(false);
   const [stoppingRestore, setStoppingRestore] = useState(false);
+  const [uploadingRestoreFile, setUploadingRestoreFile] = useState(false);
+  const selectedFile = Form.useWatch('selected_file', restoreForm);
+  const customFilePath = Form.useWatch('custom_file_path', restoreForm);
 
   const handleStopRestore = async () => {
     if (!restoringLog) return;
@@ -139,7 +143,7 @@ const BackupPage: React.FC = () => {
     try {
       const res = await checkPgDump();
       if (res.success) setPgDumpStatus(res.data);
-    } catch {}
+    } catch { }
   };
 
   const handleInstallPgTools = async () => {
@@ -155,7 +159,7 @@ const BackupPage: React.FC = () => {
         setManualInstallModal(true);
         return;
       }
-      
+
       // 轮询进度
       let done = false;
       while (!done) {
@@ -175,7 +179,7 @@ const BackupPage: React.FC = () => {
           done = true;
         }
       }
-    } catch (err: any) { 
+    } catch (err: any) {
       setLastInstallError(err.message || '');
       setManualInstallModal(true);
     }
@@ -205,7 +209,7 @@ const BackupPage: React.FC = () => {
     const src = pgSources.find(s => s.id === sourceId);
     const needsPwd = !!(src && !src.password);
     setConfigRequirePassword(needsPwd);
-    
+
     if (!needsPwd) {
       fetchDatabasesForConfig(sourceId);
     } else {
@@ -226,21 +230,21 @@ const BackupPage: React.FC = () => {
   const openEdit = (cfg: BackupConfig) => {
     setEditingId(cfg.id);
     setConfigDatabases([]);
-    
+
     const targetSource = sourceMap[cfg.pg_source_id];
     const needsPwd = targetSource && !targetSource.password;
     setConfigRequirePassword(!!needsPwd);
-    
+
     form.setFieldsValue({
       name: cfg.name,
       pg_source_id: cfg.pg_source_id,
       database_name: cfg.database_name || undefined,
       backup_dir: cfg.backup_dir || '',
       backup_format: cfg.backup_format || 'sql',
-      enabled: cfg.enabled === 1 || cfg.enabled === true,
+      enabled: Boolean(cfg.enabled),
     });
     setKeepDays(Number(cfg.keep_days));
-    
+
     if (!needsPwd) {
       fetchDatabasesForConfig(cfg.pg_source_id);
     }
@@ -321,7 +325,7 @@ const BackupPage: React.FC = () => {
         setIsBackupRunning(true);
         return true;
       }
-    } catch {}
+    } catch { }
     setIsBackupRunning(false);
     return false;
   };
@@ -335,7 +339,7 @@ const BackupPage: React.FC = () => {
     await checkRunningBackup(configId);
 
     // 加载日志（无 loading 状态）
-    loadLogs(configId).catch(() => {});
+    loadLogs(configId).catch(() => { });
 
     // 轮询日志
     if (logTimer.current) clearInterval(logTimer.current);
@@ -354,7 +358,7 @@ const BackupPage: React.FC = () => {
     try {
       const res = await listBackupLogs(configId);
       if (res.success) setLogs(res.data);
-    } catch {}
+    } catch { }
   };
 
   const closeLogs = () => {
@@ -396,7 +400,7 @@ const BackupPage: React.FC = () => {
         setRestoreProgress(progRes.data);
         setRestoring(true);
         setRestoreOpen(true);
-        
+
         if (restoreProgressTimer.current) clearInterval(restoreProgressTimer.current);
         restoreProgressTimer.current = setInterval(async () => {
           try {
@@ -404,7 +408,7 @@ const BackupPage: React.FC = () => {
             if (progRes2.success && progRes2.data) {
               const progressData = progRes2.data;
               setRestoreProgress(progressData);
-              
+
               if (progressData.status === 'success') {
                 message.success('数据恢复成功！');
                 setRestoring(false);
@@ -451,25 +455,30 @@ const BackupPage: React.FC = () => {
       restoreProgressTimer.current = null;
     }
     restoreForm.resetFields();
-    
+
+    const files = log.backup_file ? log.backup_file.split(',').map(f => f.trim()).filter(Boolean) : [];
+    const defaultFile = files.find(f => f.endsWith('.dump')) || files[0] || '__custom__';
+
     // 自动回显数据源和数据库名
     const cfg = configs.find(c => c.id === log.config_id);
     if (cfg) {
       const sourceId = cfg.pg_source_id;
       const targetSource = sourceMap[sourceId];
       const isDisabled = targetSource && (targetSource.disable_import === 1 || targetSource.disable_import === true);
-      
+
       if (!isDisabled) {
         const dbName = log.database_name || cfg.database_name || targetSource?.database || '';
         restoreForm.setFieldsValue({
           pg_source_id: sourceId,
-          database_name: dbName
+          database_name: dbName,
+          selected_file: defaultFile,
+          custom_file_path: ''
         });
-        
+
         // 检查目标数据源是否配置了密码
         const needsPwd = targetSource && !targetSource.password;
         setRequirePassword(!!needsPwd);
-        
+
         if (!needsPwd) {
           // 如果不需要临时输入密码，则直接加载该数据源下的数据库
           fetchDatabasesForSource(sourceId);
@@ -480,32 +489,123 @@ const BackupPage: React.FC = () => {
         // 如果默认数据源被禁用导入，则清空默认数据源的选择，防止在下拉框显示不可点击的 raw ID 值 (如 2)
         restoreForm.setFieldsValue({
           pg_source_id: undefined,
-          database_name: undefined
+          database_name: undefined,
+          selected_file: defaultFile,
+          custom_file_path: ''
         });
         setRequirePassword(false);
       }
     }
-    
+
     setRestoreOpen(true);
     setTableSearchText('');
 
-    // 如果包含 dump 文件，则自动加载其中的表列表以供指定恢复
-    const hasDump = log.backup_file?.split(',').some(f => f.trim().endsWith('.dump'));
-    if (hasDump) {
-      setLoadingTables(true);
-      try {
-        const res = await getBackupLogTables(log.id);
-        if (res.success) {
-          setDumpTables(res.data || []);
-        } else {
-          message.error('获取备份表结构失败: ' + res.message);
+    if (defaultFile && defaultFile !== '__custom__') {
+      loadTablesForFile(log.id, defaultFile);
+    }
+  };
+
+  const loadTablesForFile = async (logId: number, file?: string) => {
+    const isDump = file ? file.trim().endsWith('.dump') : false;
+    if (!isDump) {
+      setDumpTables([]);
+      setSelectedRestoreTables([]);
+      setSelectedRestoreSchema(undefined);
+      if (restoreMode !== 'all') {
+        setRestoreMode('all');
+        restoreForm.setFieldsValue({ restore_mode: 'all' });
+      }
+      return;
+    }
+    setLoadingTables(true);
+    try {
+      const res = await getBackupLogTables(logId, file);
+      if (res.success) {
+        setDumpTables(res.data || []);
+      } else {
+        message.error('获取备份表结构失败: ' + res.message);
+        setDumpTables([]);
+      }
+    } catch (err: any) {
+      message.error('获取备份表结构失败: ' + err.message);
+      setDumpTables([]);
+    } finally {
+      setLoadingTables(false);
+    }
+  };
+
+  const handleRestoreFormValuesChange = (changedValues: any) => {
+    if ('selected_file' in changedValues) {
+      const val = changedValues.selected_file;
+      if (val === '__custom__') {
+        setDumpTables([]);
+        setSelectedRestoreTables([]);
+        setSelectedRestoreSchema(undefined);
+        if (restoreMode !== 'all') {
+          setRestoreMode('all');
+          restoreForm.setFieldsValue({ restore_mode: 'all' });
         }
-      } catch (err: any) {
-        message.error('获取备份表结构失败: ' + err.message);
-      } finally {
-        setLoadingTables(false);
+      } else {
+        const isDump = val ? val.endsWith('.dump') : false;
+        if (!isDump) {
+          setSelectedRestoreTables([]);
+          setSelectedRestoreSchema(undefined);
+          if (restoreMode !== 'all') {
+            setRestoreMode('all');
+            restoreForm.setFieldsValue({ restore_mode: 'all' });
+          }
+        }
+        if (restoringLog) {
+          loadTablesForFile(restoringLog.id, val);
+        }
       }
     }
+  };
+
+  const handleLocalRestoreFileUpload: UploadProps['beforeUpload'] = async (file) => {
+    if (!restoringLog) {
+      message.warning('请先打开一个备份日志的恢复窗口');
+      return Upload.LIST_IGNORE;
+    }
+
+    const lowerName = file.name.toLowerCase();
+    if (!lowerName.endsWith('.dump') && !lowerName.endsWith('.sql')) {
+      message.warning('请选择 .dump 或 .sql 备份文件');
+      return Upload.LIST_IGNORE;
+    }
+
+    setUploadingRestoreFile(true);
+    try {
+      const res = await uploadBackupRestoreFile(restoringLog.id, file as File);
+      if (!res.success || !res.data?.path) {
+        message.error(res.message || '上传本地备份文件失败');
+        return Upload.LIST_IGNORE;
+      }
+
+      restoreForm.setFieldsValue({
+        selected_file: '__custom__',
+        custom_file_path: res.data.path,
+      });
+      message.success(`已选择本地文件：${res.data.filename}`);
+
+      if (res.data.path.toLowerCase().endsWith('.dump')) {
+        loadTablesForFile(restoringLog.id, res.data.path);
+      } else {
+        setDumpTables([]);
+        setSelectedRestoreTables([]);
+        setSelectedRestoreSchema(undefined);
+        if (restoreMode !== 'all') {
+          setRestoreMode('all');
+          restoreForm.setFieldsValue({ restore_mode: 'all' });
+        }
+      }
+    } catch (err: any) {
+      message.error('上传本地备份文件失败: ' + (err.message || String(err)));
+    } finally {
+      setUploadingRestoreFile(false);
+    }
+
+    return Upload.LIST_IGNORE;
   };
 
   // 关闭/取消恢复弹窗
@@ -527,7 +627,7 @@ const BackupPage: React.FC = () => {
     const src = pgSources.find(s => s.id === sourceId);
     const needsPwd = !!(src && !src.password);
     setRequirePassword(needsPwd);
-    
+
     if (!needsPwd) {
       fetchDatabasesForSource(sourceId);
     } else {
@@ -541,7 +641,7 @@ const BackupPage: React.FC = () => {
       const res = await getPgSourceDatabases(sourceId, password);
       if (res.success) {
         setRestoreDatabases(res.data || []);
-        
+
         // 如果当前没有选中的数据库，则默认填充该数据源对应的默认数据库
         const currentDb = restoreForm.getFieldValue('database_name');
         if (!currentDb) {
@@ -575,29 +675,35 @@ const BackupPage: React.FC = () => {
 
       const targetSource = pgSources.find(s => s.id === values.pg_source_id);
 
+      const selectedFileVal = values.selected_file === '__custom__' ? values.custom_file_path : values.selected_file;
+
       Modal.confirm({
         title: '确认恢复数据库备份？',
         icon: <InfoCircleOutlined style={{ color: '#faad14' }} />,
         content: (
           <div>
-            <p>您即将执行数据恢复，请<b>务必再次核对</b>以下目标库信息，防止选错破坏已有数据：</p>
+            <p>您即将执行数据恢复，请<b>务必再次核对</b>以下目标库及源文件信息，防止选错破坏已有数据：</p>
             <Card size="small" style={{ background: '#fafafa', border: '1px solid #f0f0f0', margin: '12px 0' }}>
+              <div style={{ marginBottom: 6 }}>
+                <Text type="secondary">源备份文件: </Text>
+                <Text strong style={{ wordBreak: 'break-all' }}>{selectedFileVal}</Text>
+              </div>
               <div style={{ marginBottom: 6 }}>
                 <Text type="secondary">目标数据源: </Text>
                 <Text strong>{targetSource?.name} ({targetSource?.host}:{targetSource?.port})</Text>
               </div>
-              <div>
+              <div style={{ marginBottom: 6 }}>
                 <Text type="secondary">目标数据库: </Text>
                 <Text type="danger" strong style={{ fontSize: 16 }}>{values.database_name}</Text>
               </div>
-              <div style={{ marginTop: 6 }}>
+              <div>
                 <Text type="secondary">恢复范围: </Text>
                 <Text strong>
-                  {restoreMode === 'custom' 
-                    ? `指定表 (${selectedRestoreTables.length} 张表)` 
-                    : restoreMode === 'schema' 
-                    ? `指定 Schema (${selectedRestoreSchema})` 
-                    : '整库备份 (全部恢复)'}
+                  {restoreMode === 'custom'
+                    ? `指定表 (${selectedRestoreTables.length} 张表)`
+                    : restoreMode === 'schema'
+                      ? `指定 Schema (${selectedRestoreSchema})`
+                      : '整库备份 (全部恢复)'}
                 </Text>
               </div>
               {values.overwrite && (
@@ -618,14 +724,14 @@ const BackupPage: React.FC = () => {
             progress: 0,
             message: '准备恢复任务中...',
             currentTable: '',
-            totalTables: restoreMode === 'custom' 
-              ? selectedRestoreTables.length 
-              : restoreMode === 'schema' 
-              ? dumpTables.filter(t => t.schema === selectedRestoreSchema).length 
-              : 0,
+            totalTables: restoreMode === 'custom'
+              ? selectedRestoreTables.length
+              : restoreMode === 'schema'
+                ? dumpTables.filter(t => t.schema === selectedRestoreSchema).length
+                : 0,
             doneTables: 0
           });
-          
+
           const payload = {
             pg_source_id: values.pg_source_id,
             database_name: values.database_name,
@@ -633,7 +739,8 @@ const BackupPage: React.FC = () => {
             disable_triggers: !!values.disable_triggers,
             tables: restoreMode === 'custom' ? selectedRestoreTables : undefined,
             schema: restoreMode === 'schema' ? selectedRestoreSchema : undefined,
-            temp_password: values.temp_password
+            temp_password: values.temp_password,
+            selected_file: selectedFileVal
           };
 
           if (!restoringLog) return;
@@ -642,7 +749,7 @@ const BackupPage: React.FC = () => {
             const res = await restoreBackupLog(restoringLog.id, payload);
             if (res.success) {
               message.info(res.message || '恢复任务已在后台启动，正在刷新进度...');
-              
+
               // 启动轮询获取进度
               if (restoreProgressTimer.current) clearInterval(restoreProgressTimer.current);
               restoreProgressTimer.current = setInterval(async () => {
@@ -651,7 +758,7 @@ const BackupPage: React.FC = () => {
                   if (progRes.success && progRes.data) {
                     const progressData = progRes.data;
                     setRestoreProgress(progressData);
-                    
+
                     if (progressData.status === 'success') {
                       message.success('数据恢复成功！');
                       setRestoring(false);
@@ -711,7 +818,7 @@ const BackupPage: React.FC = () => {
       try {
         const parsed = JSON.parse(log.error_message);
         if (parsed && typeof parsed.progress === 'number') return parsed;
-      } catch {}
+      } catch { }
     }
     return null;
   };
@@ -720,14 +827,16 @@ const BackupPage: React.FC = () => {
   const hasRunningLog = logs.some(l => l.status === 'running');
 
   const logColumns = [
-    { title: '状态', dataIndex: 'status', key: 'status', width: 80,
+    {
+      title: '状态', dataIndex: 'status', key: 'status', width: 80,
       render: (v: string, r: BackupLog) => {
         const progInfo = parseLogProgress(r);
         if (v === 'running') return progInfo ? <Badge status="processing" text={`${progInfo.progress}%`} /> : <Badge status="processing" text="执行中" />;
         if (v === 'success') return <Badge status="success" text="成功" />;
         if (v === 'error') return <Badge status="error" text="失败" />;
         return <Badge status="default" text={v} />;
-      } },
+      }
+    },
     {
       title: '进度', key: 'progress', width: 220,
       render: (_: any, r: BackupLog) => {
@@ -772,7 +881,8 @@ const BackupPage: React.FC = () => {
         return '-';
       }
     },
-    { title: '文件', key: 'file', width: 100,
+    {
+      title: '文件', key: 'file', width: 100,
       render: (_: any, r: BackupLog) => {
         if (!r.backup_file) return '-';
         const files = r.backup_file.split(',').map(f => f.trim()).filter(Boolean);
@@ -787,27 +897,40 @@ const BackupPage: React.FC = () => {
             ))}
           </Space>
         );
-      } },
-    { title: '大小', dataIndex: 'file_size', key: 'size', width: 80, responsive: ['sm'] as any,
-      render: (v: number) => v ? (v / 1024).toFixed(1) + ' KB' : '-' },
+      }
+    },
+    {
+      title: '大小', dataIndex: 'file_size', key: 'size', width: 80, responsive: ['sm'] as any,
+      render: (v: number) => v ? (v / 1024).toFixed(1) + ' KB' : '-'
+    },
     { title: '开始时间', dataIndex: 'started_at', key: 'start', width: 150, responsive: ['sm'] as any },
     { title: '结束时间', dataIndex: 'finished_at', key: 'end', width: 150, responsive: ['md'] as any },
   ];
 
   const columns = [
     { title: '名称', dataIndex: 'name', key: 'name', width: 140 },
-    { title: '数据源', dataIndex: 'pg_source_id', key: 'source', width: 120, responsive: ['sm'] as any,
-      render: (v: number) => <Tag color="blue">{sourceMap[v]?.name || '#' + v}</Tag> },
-    { title: '数据库', dataIndex: 'database_name', key: 'db', width: 120, responsive: ['md'] as any,
-      render: (v: string, r: BackupConfig) => v || sourceMap[r.pg_source_id]?.database || '-' },
-    { title: '备份格式', dataIndex: 'backup_format', key: 'format', width: 130, responsive: ['md'] as any,
-      render: (v: string) => <Tag color={formatColors[v] || 'blue'}>{formatLabels[v] || v}</Tag> },
-    { title: '备份目录', dataIndex: 'backup_dir', key: 'dir', width: 180, ellipsis: true, responsive: ['lg'] as any,
-      render: (v: string) => v || <Text type="secondary">默认 backups/</Text> },
+    {
+      title: '数据源', dataIndex: 'pg_source_id', key: 'source', width: 120, responsive: ['sm'] as any,
+      render: (v: number) => <Tag color="blue">{sourceMap[v]?.name || '#' + v}</Tag>
+    },
+    {
+      title: '数据库', dataIndex: 'database_name', key: 'db', width: 120, responsive: ['md'] as any,
+      render: (v: string, r: BackupConfig) => v || sourceMap[r.pg_source_id]?.database || '-'
+    },
+    {
+      title: '备份格式', dataIndex: 'backup_format', key: 'format', width: 130, responsive: ['md'] as any,
+      render: (v: string) => <Tag color={formatColors[v] || 'blue'}>{formatLabels[v] || v}</Tag>
+    },
+    {
+      title: '备份目录', dataIndex: 'backup_dir', key: 'dir', width: 180, ellipsis: true, responsive: ['lg'] as any,
+      render: (v: string) => v || <Text type="secondary">默认 backups/</Text>
+    },
     { title: '保留天数', dataIndex: 'keep_days', key: 'keep', width: 70, responsive: ['sm'] as any, render: (v: number) => v + ' 天' },
     { title: '上次执行', dataIndex: 'last_run_at', key: 'last', width: 140, responsive: ['sm'] as any, render: (v: string) => v || '-' },
-    { title: '状态', dataIndex: 'enabled', key: 'enabled', width: 60,
-      render: (v: number) => <Badge status={v ? 'success' : 'default'} text={v ? '启用' : '禁用'} /> },
+    {
+      title: '状态', dataIndex: 'enabled', key: 'enabled', width: 60,
+      render: (v: number) => <Badge status={v ? 'success' : 'default'} text={v ? '启用' : '禁用'} />
+    },
     {
       title: '操作', key: 'action', width: 260, className: 'table-action-column',
       render: (_: any, r: BackupConfig) => (
@@ -823,6 +946,9 @@ const BackupPage: React.FC = () => {
       ),
     },
   ];
+
+  const currentFile = selectedFile === '__custom__' ? customFilePath : selectedFile;
+  const isCurrentFileDump = currentFile ? currentFile.trim().endsWith('.dump') : false;
 
   const filteredDumpTables = dumpTables.filter(t => {
     const fullName = `${t.schema}.${t.name}`.toLowerCase();
@@ -943,9 +1069,9 @@ const BackupPage: React.FC = () => {
         <Form form={form} layout="vertical">
           <Form.Item label="名称" name="name" rules={[{ required: true }]}><Input placeholder="例如：每日备份" /></Form.Item>
           <Form.Item label="PG 数据源" name="pg_source_id" rules={[{ required: true }]}>
-            <Select 
-              placeholder="选择 PG 数据源" 
-              options={pgSources.map(s => ({ value: s.id, label: s.name }))} 
+            <Select
+              placeholder="选择 PG 数据源"
+              options={pgSources.map(s => ({ value: s.id, label: s.name }))}
               onChange={handleConfigSourceChange}
             />
           </Form.Item>
@@ -1008,7 +1134,7 @@ const BackupPage: React.FC = () => {
       </Modal>
 
       {/* 日志弹窗 - 无 loading，立即显示数据 */}
-      <Modal title={<>备份日志 {logConfigId && <Text type="secondary">(配置 #{logConfigId})</Text>}</>}
+      <Modal title={<>备份日志【shift+R】 {logConfigId && <Text type="secondary">(配置 #{logConfigId})</Text>}</>}
         open={logOpen} onCancel={closeLogs} footer={null} width="90%">
         {/* 运行中的备份 - 顶部停止按钮 */}
         {isBackupRunning && hasRunningLog && (
@@ -1101,8 +1227,8 @@ const BackupPage: React.FC = () => {
                   restoreProgress.status === 'error'
                     ? 'exception'
                     : restoreProgress.status === 'success'
-                    ? 'success'
-                    : 'active'
+                      ? 'success'
+                      : 'active'
                 }
                 strokeWidth={8}
               />
@@ -1111,7 +1237,7 @@ const BackupPage: React.FC = () => {
             <Card size="small" style={{ background: '#fafafa', border: '1px solid #f0f0f0' }}>
               <div style={{ marginBottom: 6 }}>
                 <Text type="secondary">备份文件: </Text>
-                <Text strong>{restoringLog?.backup_file}</Text>
+                <Text strong style={{ wordBreak: 'break-all' }}>{restoringLog?.backup_file}</Text>
               </div>
               <div style={{ marginBottom: 6 }}>
                 <Text type="secondary">目标数据库: </Text>
@@ -1171,8 +1297,76 @@ const BackupPage: React.FC = () => {
                 />
               </div>
             )}
-            
-            <Form form={restoreForm} layout="vertical" initialValues={{ restore_mode: 'all', overwrite: false, disable_triggers: true }}>
+
+            <Form
+              form={restoreForm}
+              layout="vertical"
+              initialValues={{ restore_mode: 'all', overwrite: false, disable_triggers: true }}
+              onValuesChange={handleRestoreFormValuesChange}
+            >
+              <Form.Item
+                label="源备份文件"
+                name="selected_file"
+                rules={[{ required: true, message: '请选择源备份文件' }]}
+              >
+                <Select
+                  placeholder="请选择源备份文件"
+                  options={[
+                    ...(restoringLog?.backup_file ? restoringLog.backup_file.split(',').map(f => f.trim()).filter(Boolean) : []).map(f => ({ value: f, label: f })),
+                    { value: '__custom__', label: '自定义文件路径 / 文件名...' },
+                  ]}
+                />
+              </Form.Item>
+
+              {selectedFile === '__custom__' && (
+                <Form.Item
+                  label="自定义源文件路径"
+                  required
+                  extra="输入 PostgreSQL 备份文件的绝对路径，或相对于备份目录的路径。必须是服务器上可访问的路径。"
+                >
+                  <div style={{ display: 'flex', gap: 8 }}>
+                    <Form.Item
+                      name="custom_file_path"
+                      noStyle
+                      rules={[{ required: true, message: '请输入自定义源文件路径' }]}
+                    >
+                      <Input
+                        placeholder="例如: /var/lib/postgresql/backups/my_backup.dump"
+                        style={{ flex: 1 }}
+                        onBlur={() => {
+                          const customPath = restoreForm.getFieldValue('custom_file_path');
+                          if (restoringLog && customPath) {
+                            loadTablesForFile(restoringLog.id, customPath);
+                          }
+                        }}
+                      />
+                    </Form.Item>
+                    <Upload
+                      accept=".dump,.sql"
+                      showUploadList={false}
+                      beforeUpload={handleLocalRestoreFileUpload}
+                    >
+                      <Button icon={<UploadOutlined />} loading={uploadingRestoreFile}>
+                        选择本地文件
+                      </Button>
+                    </Upload>
+                    <Button
+                      loading={loadingTables}
+                      onClick={() => {
+                        const customPath = restoreForm.getFieldValue('custom_file_path');
+                        if (restoringLog && customPath) {
+                          loadTablesForFile(restoringLog.id, customPath);
+                        } else {
+                          message.warning('请先输入自定义文件路径');
+                        }
+                      }}
+                    >
+                      加载表结构
+                    </Button>
+                  </div>
+                </Form.Item>
+              )}
+
               <Form.Item
                 label="目标数据源"
                 name="pg_source_id"
@@ -1204,11 +1398,11 @@ const BackupPage: React.FC = () => {
                   />
                 </Form.Item>
               )}
-              
+
               <Form.Item
                 label="目标数据库"
                 required
-                extra="选择要将数据恢复 to 哪个数据库中，请确保该数据库已在目标服务器中存在"
+                extra="选择要将数据恢复到哪个数据库中，请确保该数据库已在目标服务器中存在"
               >
                 <div style={{ display: 'flex', gap: 8 }}>
                   <Form.Item
@@ -1244,15 +1438,15 @@ const BackupPage: React.FC = () => {
               <Form.Item label="恢复范围" name="restore_mode">
                 <Radio.Group onChange={(e) => setRestoreMode(e.target.value)} value={restoreMode}>
                   <Radio value="all">全部恢复</Radio>
-                  <Radio value="schema" disabled={restoringLog && !restoringLog.backup_file.split(',').some(f => f.trim().endsWith('.dump'))}>
+                  <Radio value="schema" disabled={!isCurrentFileDump}>
                     恢复指定 Schema
-                    {restoringLog && !restoringLog.backup_file.split(',').some(f => f.trim().endsWith('.dump')) && (
+                    {!isCurrentFileDump && (
                       <span style={{ color: '#ccc', fontSize: 12, marginLeft: 8 }}>(仅 DUMP 格式支持 Schema)</span>
                     )}
                   </Radio>
-                  <Radio value="custom" disabled={restoringLog && !restoringLog.backup_file.split(',').some(f => f.trim().endsWith('.dump'))}>
+                  <Radio value="custom" disabled={!isCurrentFileDump}>
                     恢复指定表
-                    {restoringLog && !restoringLog.backup_file.split(',').some(f => f.trim().endsWith('.dump')) && (
+                    {!isCurrentFileDump && (
                       <span style={{ color: '#ccc', fontSize: 12, marginLeft: 8 }}>(仅 DUMP 格式支持指定表)</span>
                     )}
                   </Radio>
@@ -1332,7 +1526,7 @@ const BackupPage: React.FC = () => {
                               setSelectedRestoreTables(prev => prev.filter(k => k !== key));
                             }
                           },
-                          onSelectAll: (selected, selectedRows, changeRows) => {
+                          onSelectAll: (selected, _selectedRows, changeRows) => {
                             const changeKeys = changeRows.map(r => `${r.schema}.${r.name}`);
                             if (selected) {
                               setSelectedRestoreTables(prev => {
@@ -1429,7 +1623,7 @@ sudo apt-get install -y postgresql-client-16
         </Card>
         <Text type="secondary">安装完成后，点击上方「安装完成，重新检测」按钮确认版本。</Text>
       </Modal>
-    </div>
+    </div >
   );
 };
 

@@ -5,7 +5,7 @@ module.exports = {
     script: 'dist/index.js',
     env: {
       NODE_ENV: 'production',
-      PORT: 3001,
+      PORT: process.env.PORT || 3001,
     },
     instances: 1,
     exec_mode: 'fork',

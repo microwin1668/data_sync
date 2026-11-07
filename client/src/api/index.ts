@@ -145,6 +145,7 @@ export interface SyncConfig {
   name: string;
   remote_table_id: number;
   pg_source_id: number;
+  target_database: string;
   target_table: string;
   target_pk: string;
   import_settings: string;
@@ -169,7 +170,7 @@ export async function getSyncConfig(id: number) {
 }
 
 export async function createSyncConfig(cfg: {
-  name: string; remote_table_id: number; pg_source_id: number; target_table: string;
+  name: string; remote_table_id: number; pg_source_id: number; target_database?: string; target_table: string;
   target_pk: string; import_settings: string; page: number; per_page: number; all_import: number;
   conditions: string;
   logic: string;
@@ -180,7 +181,7 @@ export async function createSyncConfig(cfg: {
 }
 
 export async function updateSyncConfig(id: number, cfg: {
-  name: string; remote_table_id: number; pg_source_id: number; target_table: string;
+  name: string; remote_table_id: number; pg_source_id: number; target_database?: string; target_table: string;
   target_pk: string; import_settings: string; page: number; per_page: number; all_import: number;
   conditions: string;
   logic: string;
@@ -300,12 +301,14 @@ export interface SyncTask {
   scheduled_time: string; // HH:mm
   scheduled_days: string; // 1,2,3,4,5,6,7
   enabled: number;
+  sort_order: number;     // 执行顺序，数字小的先执行
   last_run_at: string;
   next_run_at: string;
   created_at: string;
   updated_at: string;
-  task_type: string;      // sync / backup
+  task_type: string;      // sync / backup / file_backup
   backup_config_id: number;
+  file_backup_config_id: number;
   backup_dir: string;
   keep_days: number;
 }
@@ -324,7 +327,8 @@ export async function createSyncTask(task: {
   name: string; sync_config_id: number; sync_config_ids?: string; type: string;
   interval_value: number; interval_unit: string;
   cron_expr: string; scheduled_time: string; scheduled_days: string; enabled: number;
-  task_type?: string; backup_config_id?: number; backup_dir?: string; keep_days?: number;
+  sort_order?: number;
+  task_type?: string; backup_config_id?: number; file_backup_config_id?: number; backup_dir?: string; keep_days?: number;
 }) {
   const res = await api.post('/sync-tasks', task);
   return res.data;
@@ -334,7 +338,8 @@ export async function updateSyncTask(id: number, task: {
   name: string; sync_config_id: number; sync_config_ids?: string; type: string;
   interval_value: number; interval_unit: string;
   cron_expr: string; scheduled_time: string; scheduled_days: string; enabled: number;
-  task_type?: string; backup_config_id?: number; backup_dir?: string; keep_days?: number;
+  sort_order?: number;
+  task_type?: string; backup_config_id?: number; file_backup_config_id?: number; backup_dir?: string; keep_days?: number;
 }) {
   const res = await api.put('/sync-tasks/' + id, task);
   return res.data;
@@ -451,6 +456,108 @@ export async function runBackupNow(id: number) {
   return res.data;
 }
 
+// ========== 文件备份配置管理(远程目录每日快照) ==========
+
+export interface FileBackupConfig {
+  id: number;
+  name: string;
+  ssh_host: string;
+  ssh_port: string;
+  ssh_user: string;
+  auth_type: string;       // key: SSH 密钥 / password: 密码(sshpass)
+  ssh_key_path: string;
+  ssh_password: string;
+  remote_dir: string;
+  local_dir: string;
+  exclude_patterns: string; // JSON 数组字符串
+  keep_days: number;
+  enabled: number;
+  last_run_at: string;
+  last_snapshot_dir: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface FileBackupLog {
+  id: number;
+  config_id: number;
+  config_name: string;
+  remote_dir: string;
+  local_dir: string;
+  snapshot_dir: string;
+  status: string;
+  total_files: number;
+  transferred_files: number;
+  transferred_bytes: number;
+  error_message: string;
+  started_at: string;
+  finished_at: string;
+  created_at: string;
+}
+
+export async function listFileBackupConfigs(): Promise<{ success: boolean; data: FileBackupConfig[] }> {
+  const res = await api.get('/file-backup-configs');
+  return res.data;
+}
+
+export async function createFileBackupConfig(cfg: any) {
+  const res = await api.post('/file-backup-configs', cfg);
+  return res.data;
+}
+
+export async function updateFileBackupConfig(id: number, cfg: any) {
+  const res = await api.put('/file-backup-configs/' + id, cfg);
+  return res.data;
+}
+
+export async function deleteFileBackupConfig(id: number) {
+  const res = await api.delete('/file-backup-configs/' + id);
+  return res.data;
+}
+
+export async function listFileBackupConfigsNames(): Promise<{ success: boolean; data: { id: number; name: string }[] }> {
+  const res = await api.get('/config/file-backup-configs-names');
+  return res.data;
+}
+
+export async function runFileBackupNow(id: number) {
+  const res = await api.post('/file-backup-configs/' + id + '/run');
+  return res.data;
+}
+
+export async function getFileBackupProgress(id: number): Promise<{ success: boolean; data: any }> {
+  const res = await api.get('/file-backup-configs/' + id + '/progress');
+  return res.data;
+}
+
+export async function stopFileBackup(id: number): Promise<{ success: boolean; message: string }> {
+  const res = await api.post('/file-backup-configs/' + id + '/stop');
+  return res.data;
+}
+
+export async function listFileBackupLogs(configId: number): Promise<{ success: boolean; data: FileBackupLog[] }> {
+  const res = await api.get('/file-backup-configs/' + configId + '/logs');
+  return res.data;
+}
+
+export async function deleteFileBackupLogs(ids: number[]): Promise<{ success: boolean; message: string }> {
+  const res = await api.delete('/file-backup-logs', { data: { ids } });
+  return res.data;
+}
+
+export async function checkRsync(): Promise<{ success: boolean; data: { installed: boolean; rsync: boolean; path: string; version: string; isOpenRsync: boolean; sshpass: boolean; sshpassHint: string } }> {
+  const res = await api.get('/file-backup/check-rsync');
+  return res.data;
+}
+
+export async function testFileBackupConnection(conn: {
+  ssh_host: string; ssh_port: string; ssh_user: string;
+  auth_type: string; ssh_key_path: string; ssh_password: string;
+}): Promise<{ success: boolean; message: string }> {
+  const res = await api.post('/file-backup/test-connection', conn);
+  return res.data;
+}
+
 export async function getBackupProgress(id: number): Promise<{ success: boolean; data: any }> {
   const res = await api.get('/backup-configs/' + id + '/progress');
   return res.data;
@@ -496,12 +603,22 @@ export async function getPgSourceDatabases(sourceId: number, password?: string):
   return res.data;
 }
 
-export async function getBackupLogTables(logId: number): Promise<{ success: boolean; data: { schema: string; name: string }[]; message?: string }> {
-  const res = await api.get(`/backup-logs/${logId}/tables`);
+export async function getBackupLogTables(logId: number, selectedFile?: string): Promise<{ success: boolean; data: { schema: string; name: string }[]; message?: string }> {
+  const res = await api.get(`/backup-logs/${logId}/tables`, { params: { selected_file: selectedFile } });
   return res.data;
 }
 
-export async function restoreBackupLog(logId: number, data: { pg_source_id: number; database_name: string; tables?: string[]; schema?: string; overwrite: boolean; disable_triggers?: boolean }): Promise<{ success: boolean; message: string }> {
+export async function uploadBackupRestoreFile(logId: number, file: File): Promise<{ success: boolean; data?: { path: string; filename: string; size: number }; message?: string }> {
+  const formData = new FormData();
+  formData.append('file', file);
+  const res = await api.post(`/backup-logs/${logId}/restore-file`, formData, {
+    headers: { 'Content-Type': 'multipart/form-data' },
+    timeout: 0,
+  });
+  return res.data;
+}
+
+export async function restoreBackupLog(logId: number, data: { pg_source_id: number; database_name: string; tables?: string[]; schema?: string; overwrite: boolean; disable_triggers?: boolean; selected_file?: string }): Promise<{ success: boolean; message: string }> {
   const res = await api.post(`/backup-logs/${logId}/restore`, data);
   return res.data;
 }
@@ -516,4 +633,36 @@ export async function stopBackupRestore(logId: number): Promise<{ success: boole
   return res.data;
 }
 
+// ========== 邮件告警 ==========
+
+export interface EmailNotifyConfig {
+  smtp_host: string;
+  smtp_port: string | number;
+  smtp_secure: number;
+  smtp_user: string;
+  smtp_password: string;
+  from_email: string;
+  recipients: string;
+  notify_backup_fail: number;
+  notify_sync_fail: number;
+  notify_crash: number;
+  notify_file_backup_fail: number;
+  throttle_minutes: number;
+  crash_throttle_minutes: number;
+}
+
+export async function getEmailNotifyConfig(): Promise<{ success: boolean; data?: EmailNotifyConfig }> {
+  const res = await api.get('/notify/config');
+  return res.data;
+}
+
+export async function saveEmailNotifyConfig(config: Partial<EmailNotifyConfig>): Promise<{ success: boolean; message?: string }> {
+  const res = await api.post('/notify/config', config);
+  return res.data;
+}
+
+export async function sendNotifyTestEmail(): Promise<{ success: boolean; message?: string }> {
+  const res = await api.post('/notify/test');
+  return res.data;
+}
 

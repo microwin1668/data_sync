@@ -113,9 +113,27 @@ Data-Sync is a robust, production-ready, full-stack data synchronization and aut
 
 ### 📦 Production Deployment
 
-Three standard deployment approaches are provided:
+Four standard deployment approaches are provided:
 
-#### Method A: Docker Compose (Recommended)
+#### Method A: One-Command Deploy Script (Recommended)
+Pulls the latest code, compiles the backend, builds the frontend, and starts/reloads via PM2 — all in one command. Requires Node.js ≥ 22 (auto-installed when possible).
+
+```bash
+# First deploy — run on the target machine (auto-clones into ./data-sync)
+bash <(curl -fsSL https://raw.githubusercontent.com/microwin1668/data_sync/main/deploy.sh)
+
+# Or clone manually, then run
+git clone https://github.com/microwin1668/data_sync.git data-sync && cd data-sync && ./deploy.sh
+
+# Later updates — inside the project directory
+./deploy.sh              # git pull --ff-only (aborts if local changes exist)
+./deploy.sh --force      # discard local changes, force-align to origin/main
+./deploy.sh --skip-build # skip build, only restart (e.g. after config tweaks)
+```
+
+Options: `REPO_URL=... ./deploy.sh` overrides the repository URL; `PORT=3002 ./deploy.sh` overrides the service port. SQLite data (`server/data/`) and logs are never touched by updates.
+
+#### Method B: Docker Compose
 Containerized setup with automated multi-stage compilation. SQLite database and logs are persisted to host directories.
 ```bash
 # Start the containers
@@ -129,7 +147,7 @@ docker-compose logs -f
 ```
 Access the application at `http://localhost:3001` (Koa serves the static web assets).
 
-#### Method B: PM2 Deployment
+#### Method C: PM2 Deployment (existing offline builds)
 Best suited for Linux servers with Node.js installed.
 ```bash
 # Grant execution permissions
@@ -143,7 +161,7 @@ Useful PM2 commands:
 - Tail logs: `pm2 logs data-sync`
 - Restart service: `pm2 restart data-sync`
 
-#### Method C: Offline Package Deployment
+#### Method D: Offline Package Deployment
 For intranet environments with no build tools or external network connections.
 1. **Compile and package on your development/CI machine**:
    ```bash

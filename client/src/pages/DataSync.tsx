@@ -1,15 +1,17 @@
 import React, { useState, useEffect } from 'react';
 import {
-  Card, Table, Button, Space, Modal, Form, Input, Select, message, Popconfirm, Tag, Typography, Spin, Row, Col, Divider, Checkbox, Tooltip, Progress
+  Card, Table, Button, Space, Modal, Form, Input, Select, message, Popconfirm, Tag, Typography, Spin, Row, Col, Divider, Checkbox, Tooltip, Progress, Collapse
 } from 'antd';
 import {
   PlusOutlined, EditOutlined, DeleteOutlined, SwapOutlined, DownloadOutlined,
-  EyeOutlined, ImportOutlined, QuestionCircleOutlined, StopOutlined,
+  EyeOutlined, ImportOutlined, QuestionCircleOutlined, StopOutlined, ReloadOutlined, DatabaseOutlined,
+  ThunderboltOutlined, CloseOutlined, ClearOutlined,
 } from '@ant-design/icons';
 import {
   listSyncConfigs, createSyncConfig, updateSyncConfig, deleteSyncConfig,
   previewSyncData, importSyncData, importSyncDataStream, importCancelStream,
   listRemoteTables, listPgSources, listPgTablesInSource, listPgColumnsInSource, getRemoteTableFields, fetchRemoteData,
+  getPgSourceDatabases,
 } from '../api';
 import type { SyncConfig, RemoteTable, PgDatasource } from '../api';
 import JsonTreeViewer from '../components/JsonTreeViewer';
@@ -68,9 +70,13 @@ const DataSync: React.FC = () => {
   const [fields, setFields] = useState<FieldMapping[]>([newField()]);
   const [pgTables, setPgTables] = useState<string[]>([]);
   const [srcFields, setSrcFields] = useState<{ name: string; description: string }[]>([]);
-  const [dstFields, setDstFields] = useState<string[]>([]);
+  const [dstFields, setDstFields] = useState<{ name: string; type: string; comment: string }[]>([]);
   const [saving, setSaving] = useState(false);
   const [srcFieldsLoading, setSrcFieldsLoading] = useState(false);
+  // 目标数据库（同一服务器多库同步）：从数据源所在服务器拉取数据库列表
+  const [targetDatabases, setTargetDatabases] = useState<string[]>([]);
+  const [loadingTargetDatabases, setLoadingTargetDatabases] = useState(false);
+  const [targetRequirePassword, setTargetRequirePassword] = useState(false);
 
   const [previewOpen, setPreviewOpen] = useState(false);
   const [previewData, setPreviewData] = useState<any>(null);
@@ -112,9 +118,41 @@ const DataSync: React.FC = () => {
     finally { setLoading(false); }
   };
 
+  // 实际生效的目标库：配置指定了目标库则用它，否则用数据源默认库
+  const getEffectiveDatabase = () => {
+    const sourceId = form.getFieldValue('pg_source_id');
+    const src = pgSources.find(s => s.id === sourceId);
+    return (form.getFieldValue('target_database') || '').trim() || (src ? src.database : '');
+  };
+
+  const fetchDatabasesForTarget = async (sourceId: number, password?: string) => {
+    setLoadingTargetDatabases(true);
+    try {
+      const res = await getPgSourceDatabases(sourceId, password);
+      if (res.success) {
+        setTargetDatabases(res.data || []);
+      } else {
+        message.warning('获取数据库列表失败: ' + (res.message || ''));
+        setTargetDatabases([]);
+      }
+    } catch {
+      setTargetDatabases([]);
+    } finally {
+      setLoadingTargetDatabases(false);
+    }
+  };
+
   const onSelectPgSource = async (sourceId: number) => {
     const src = pgSources.find(s => s.id === sourceId);
     if (!src) return;
+    setTargetRequirePassword(!src.password);
+    // 目标数据库为必填:选择数据源后自动填入该数据源的默认库
+    form.setFieldsValue({ target_database: src.database || undefined });
+    if (src.password) {
+      fetchDatabasesForTarget(sourceId);
+    } else {
+      setTargetDatabases([]);
+    }
     try {
       const res = await listPgTablesInSource({
         host: src.host, port: src.port, user: src.user, password: src.password, database: src.database, schema: src.schema,
@@ -123,14 +161,33 @@ const DataSync: React.FC = () => {
     } catch { setPgTables([]); }
   };
 
+  // 切换目标数据库后重新拉取该库下的表
+  const onSelectTargetDatabase = async (dbName?: string) => {
+    form.setFieldsValue({ target_table: undefined });
+    setPgTables([]);
+    setDstFields([]);
+    const sourceId = form.getFieldValue('pg_source_id');
+    const src = pgSources.find(s => s.id === sourceId);
+    if (!src) return;
+    const database = (dbName || '').trim() || src.database;
+    try {
+      const res = await listPgTablesInSource({
+        host: src.host, port: src.port, user: src.user, password: src.password, database, schema: src.schema,
+      });
+      if (res.success) setPgTables(res.tables || []);
+    } catch { setPgTables([]); }
+  };
+
   const onSelectTargetTable = async (tableName: string) => {
-    const src = pgSources.find(s => s.id === form.getFieldValue('pg_source_id'));
+    const sourceId = form.getFieldValue('pg_source_id');
+    const src = pgSources.find(s => s.id === sourceId);
     if (!src || !tableName) return;
+    const database = getEffectiveDatabase() || src.database;
     try {
       const res = await listPgColumnsInSource({
-        host: src.host, port: src.port, user: src.user, password: src.password, database: src.database, schema: src.schema, table: tableName,
+        host: src.host, port: src.port, user: src.user, password: src.password, database, schema: src.schema, table: tableName,
       });
-      if (res.success) setDstFields((res.columns || []).map((c: any) => c.name));
+      if (res.success) setDstFields(res.columns || []);
     } catch { setDstFields([]); }
   };
 
@@ -149,18 +206,36 @@ const DataSync: React.FC = () => {
     form.resetFields();
     setFields([newField()]);
     setPgTables([]); setSrcFields([]); setDstFields([]);
+    setTargetDatabases([]); setTargetRequirePassword(false);
     setEditQuery(defaultQuery);    setEditOpen(true);
     setEditPreviewData(null);  };
 
   const openEdit = async (cfg: SyncConfig) => {
     try {
       setEditingId(cfg.id);
+      const src = pgSources.find(s => s.id === cfg.pg_source_id);
       form.setFieldsValue({
         name: cfg.name, remote_table_id: cfg.remote_table_id, pg_source_id: cfg.pg_source_id,
+        // 编辑时回显生效的数据库:未显式指定的旧配置回填数据源默认库
+        target_database: (cfg.target_database || '').trim() || (src ? src.database : '') || undefined,
         target_table: cfg.target_table, page: cfg.page, per_page: cfg.per_page,
       });
       setEditQuery(prev => ({ ...prev, perPage: cfg.per_page || 200 }));
-      await onSelectPgSource(cfg.pg_source_id);
+      setTargetRequirePassword(!!src && !src.password);
+      if (src && src.password) fetchDatabasesForTarget(cfg.pg_source_id);
+      else setTargetDatabases([]);
+      // 若指定了目标库，用目标库重新拉取表列表
+      const effectiveDb = (cfg.target_database || '').trim() || (src ? src.database : '');
+      if (src && effectiveDb) {
+        try {
+          const res = await listPgTablesInSource({
+            host: src.host, port: src.port, user: src.user, password: src.password, database: effectiveDb, schema: src.schema,
+          });
+          if (res.success) setPgTables(res.tables || []);
+        } catch { setPgTables([]); }
+      } else {
+        await onSelectPgSource(cfg.pg_source_id);
+      }
       await onSelectTargetTable(cfg.target_table);
       await onSelectRemoteTable(cfg.remote_table_id);
       try {
@@ -248,22 +323,58 @@ const DataSync: React.FC = () => {
   });
 
   const handleSave = async () => {
+    let values: any;
     try {
-      const values = await form.validateFields();
-      setSaving(true);
-      const payload = {
-        name: values.name, remote_table_id: values.remote_table_id, pg_source_id: values.pg_source_id,
-        target_table: values.target_table, target_pk: '', page: values.page || 1, per_page: editQuery.perPage || 200,
-        import_settings: JSON.stringify(buildSettings()), all_import: 0,        conditions: JSON.stringify(editQuery.conditions),        logic: editQuery.logic,        order_field: editQuery.orderField,        order_dir: editQuery.orderDir,
-      };
-      if (editingId) { await updateSyncConfig(editingId, payload); message.success('更新成功'); }
-      else { await createSyncConfig(payload); message.success('创建成功'); }
-      setEditOpen(false);
-      loadAll();
+      values = await form.validateFields();
     } catch (err: any) {
       if (err.errorFields) return;
       message.error('保存失败: ' + (err.message || ''));
-    } finally { setSaving(false); }
+      return;
+    }
+    const doSave = async () => {
+      setSaving(true);
+      try {
+        const payload = {
+          name: values.name, remote_table_id: values.remote_table_id, pg_source_id: values.pg_source_id,
+          target_database: (values.target_database || '').trim(),
+          target_table: values.target_table, target_pk: '', page: values.page || 1, per_page: editQuery.perPage || 200,
+          import_settings: JSON.stringify(buildSettings()), all_import: 0,        conditions: JSON.stringify(editQuery.conditions),        logic: editQuery.logic,        order_field: editQuery.orderField,        order_dir: editQuery.orderDir,
+        };
+        if (editingId) { await updateSyncConfig(editingId, payload); message.success('更新成功'); }
+        else { await createSyncConfig(payload); message.success('创建成功'); }
+        setEditOpen(false);
+        loadAll();
+      } catch (err: any) {
+        message.error('保存失败: ' + (err.message || ''));
+      } finally { setSaving(false); }
+    };
+    // 没有任何有效字段映射(源字段+目标字段都填了)时,二次确认后才能保存
+    if (!fields.some(f => f.srcField && f.distField)) {
+      Modal.confirm({
+        title: '尚未配置字段映射',
+        icon: <QuestionCircleOutlined style={{ color: '#faad14' }} />,
+        content: '当前没有任何有效的字段映射(源字段和目标字段都未填写),导入时将无法同步数据。确定仍要保存该配置吗?',
+        okText: '继续保存',
+        okType: 'danger',
+        cancelText: '返回修改',
+        onOk: doSave,
+      });
+      return;
+    }
+    // 有映射但没勾选任何主键时,二次确认(upsert 依赖主键定位记录)
+    if (!fields.some(f => f.isPk && f.srcField && f.distField)) {
+      Modal.confirm({
+        title: '尚未勾选主键',
+        icon: <QuestionCircleOutlined style={{ color: '#faad14' }} />,
+        content: '字段映射中没有任何一行勾选主键。主键用于 upsert 的 ON CONFLICT 冲突定位,不设置可能导致重复插入数据。确定仍要保存该配置吗?',
+        okText: '继续保存',
+        okType: 'danger',
+        cancelText: '返回修改',
+        onOk: doSave,
+      });
+      return;
+    }
+    await doSave();
   };
 
   const handleDelete = async (id: number) => { await deleteSyncConfig(id); message.success('已删除'); loadAll(); };
@@ -361,7 +472,65 @@ const DataSync: React.FC = () => {
     finally { setPreviewing(false); }
   };
 
+  // 自动匹配字段映射:源字段名与目标字段名(忽略大小写/下划线)或中文备注一致即填入
+  const handleAutoMatch = () => {
+    if (!srcFields.length) { message.warning('请先点击「获取远程字段结构」加载源字段'); return; }
+    if (!dstFields.length) { message.warning('请先选择目标表以加载目标字段'); return; }
+    const norm = (s: string) => (s || '').toLowerCase().replace(/[_\s]/g, '');
+    const matchDst = (srcName: string, srcDesc: string) => {
+      const dstList = dstFields;
+      return dstList.find(d => norm(d.name) === norm(srcName))
+        || dstList.find(d => srcDesc && d.comment && norm(d.comment) === norm(srcDesc));
+    };
+    // 全新映射(没有任何源字段):按远程字段逐个生成映射行,能匹配的目标字段自动填入
+    if (!fields.some(f => f.srcField)) {
+      let matched = 0;
+      setFields(srcFields.map(s => {
+        const dst = matchDst(s.name, s.description || '');
+        if (dst) matched++;
+        return { ...newField(), srcField: s.name, distField: dst ? dst.name : '' };
+      }));
+      message.success(`已按远程字段生成 ${srcFields.length} 行映射,其中 ${matched} 行自动匹配到目标字段`);
+      return;
+    }
+    // 已有映射:只填充空缺的目标字段,不覆盖已手动选择的
+    let filled = 0;
+    setFields(fields.map(f => {
+      if (!f.srcField || f.distField) return f;
+      const dst = matchDst(f.srcField, srcFields.find(s => s.name === f.srcField)?.description || '');
+      if (dst) { filled++; return { ...f, distField: dst.name }; }
+      return f;
+    }));
+    if (filled > 0) message.success(`自动匹配完成: 补充了 ${filled} 个目标字段(已选的不会被覆盖)`);
+    else message.warning('没有找到可自动匹配的字段,请检查字段命名是否一致');
+  };
+
+  // 一键清空全部字段映射,恢复为单个空白行
+  const handleClearMappings = () => {
+    setFields([newField()]);
+    message.success('已清空全部字段映射');
+  };
+
   const handleImport = (id: number) => {
+    const cfg = configs.find(c => c.id === id);
+    if (!cfg) { message.error('未找到该配置'); return; }
+    Modal.confirm({
+      title: '确认执行导入?',
+      icon: <QuestionCircleOutlined style={{ color: '#faad14' }} />,
+      content: (
+        <div style={{ fontSize: 13 }}>
+          <p>即将立即执行导入配置 <Text strong>{cfg.name}</Text></p>
+          <p>远程表数据将按字段映射写入目标表 <Text code>{dbNameOf(cfg)}.{cfg.target_table}</Text>(主键冲突时覆盖更新),确定继续?</p>
+        </div>
+      ),
+      okText: '开始导入',
+      okType: 'primary',
+      cancelText: '取消',
+      onOk: () => runImport(id),
+    });
+  };
+
+  const runImport = (id: number) => {
     setImporting(id);
     setImportProgressOpen(true);
     setImportProgress({ total: 0, imported: 0, success: 0, error: 0, page: 0, maxPage: 0, done: false, failedRecords: [], msg: "", logFilename: "" });
@@ -396,9 +565,31 @@ const DataSync: React.FC = () => {
     closeImportStream.current = close;
   };
 
+  const sourceMap = Object.fromEntries(pgSources.map(s => [s.id, s]));
+
+  // 取配置生效的目标数据库名(未指定时回退到数据源默认库)
+  const dbNameOf = (r: SyncConfig): string => {
+    const src = sourceMap[r.pg_source_id];
+    return (r.target_database || '').trim() || (src ? src.database : '') || '默认库';
+  };
+
   const columns = [
     { title: '配置名', dataIndex: 'name', key: 'name', width: 140 },
-    { title: '目标表', dataIndex: 'target_table', key: 'target_table', width: 130, responsive: ['sm'] as any },
+    {
+      title: '目标数据源', key: 'target_source', width: 120, responsive: ['sm'] as any,
+      render: (_: any, r: SyncConfig) => {
+        const src = sourceMap[r.pg_source_id];
+        return <Tag color="geekblue">{src ? src.name : (r.pg_source_id ? `#${r.pg_source_id}` : '未指定')}</Tag>;
+      },
+    },
+    {
+      title: '目标数据库', key: 'target_db', width: 120, responsive: ['sm'] as any,
+      render: (_: any, r: SyncConfig) => <Tag color="cyan">{dbNameOf(r)}</Tag>,
+    },
+    {
+      title: '目标表', dataIndex: 'target_table', key: 'target_table', width: 130, responsive: ['md'] as any,
+      render: (_: any, r: SyncConfig) => r.target_table,
+    },
     {
       title: '映射', dataIndex: 'import_settings', key: 'settings', width: 70, responsive: ['sm'] as any,
       render: (v: string) => {
@@ -434,6 +625,7 @@ const DataSync: React.FC = () => {
           {!loading && configs.map(r => {
             let fieldCount = 0;
             try { fieldCount = JSON.parse(r.import_settings || '[]').length; } catch {}
+            const src = sourceMap[r.pg_source_id];
             return (
               <Card
                 key={r.id}
@@ -447,6 +639,8 @@ const DataSync: React.FC = () => {
                 extra={<Tag color="blue">映射字段: {fieldCount}</Tag>}
               >
                 <div style={{ padding: '4px 0', fontSize: 13, display: 'flex', flexDirection: 'column', gap: 4 }}>
+                  <div><Text type="secondary">目标数据源:</Text> <Tag color="geekblue">{src ? src.name : (r.pg_source_id ? `#${r.pg_source_id}` : '未指定')}</Tag></div>
+                  <div><Text type="secondary">目标数据库:</Text> <Tag color="cyan">{dbNameOf(r)}</Tag></div>
                   <div><Text type="secondary">目标表:</Text> <Text strong>{r.target_table}</Text></div>
                 </div>
                 <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 12, borderTop: '1px solid #f0f0f0', paddingTop: 8, flexWrap: 'wrap' }}>
@@ -476,12 +670,50 @@ const DataSync: React.FC = () => {
               </Button>
             )}
           </div>
-          <Table dataSource={configs} columns={columns} rowKey="id" loading={loading} pagination={false} size="small"
-            scroll={{ x: 'max-content' }}
-            rowSelection={{
-              selectedRowKeys: selectedKeys,
-              onChange: (keys: React.Key[]) => setSelectedKeys(keys as number[]),
-            }} />
+          {(() => {
+            // 按 目标数据源 + 目标数据库 分组,每组一个手风琴面板
+            const groupMap = new Map<string, { sourceName: string; dbName: string; items: SyncConfig[] }>();
+            for (const r of configs) {
+              const src = sourceMap[r.pg_source_id];
+              const sourceName = src ? src.name : (r.pg_source_id ? `#${r.pg_source_id}` : '未指定数据源');
+              const dbName = dbNameOf(r);
+              const key = `${r.pg_source_id || 0}::${dbName}`;
+              if (!groupMap.has(key)) groupMap.set(key, { sourceName, dbName, items: [] });
+              groupMap.get(key)!.items.push(r);
+            }
+            const groups = Array.from(groupMap.entries()).map(([key, g]) => ({ key, ...g }))
+              .sort((a, b) => a.sourceName.localeCompare(b.sourceName, 'zh-CN') || a.dbName.localeCompare(b.dbName, 'zh-CN'));
+            if (groups.length === 0) {
+              return loading
+                ? <div style={{ textAlign: 'center', padding: 24 }}><Spin /></div>
+                : <div style={{ textAlign: 'center', padding: 24, color: '#999' }}>暂无配置</div>;
+            }
+            return (
+              <Collapse accordion
+                defaultActiveKey={groups.length ? [groups[0].key] : []}
+                items={groups.map(g => ({
+                  key: g.key,
+                  label: (
+                    <Space size={8} wrap>
+                      <DatabaseOutlined style={{ color: '#1677ff' }} />
+                      <span style={{ color: '#888' }}>目标数据源:</span>
+                      <Tag color="geekblue" style={{ margin: 0 }}>{g.sourceName}</Tag>
+                      <span style={{ color: '#888' }}>目标数据库:</span>
+                      <Tag color="cyan" style={{ margin: 0 }}>{g.dbName}</Tag>
+                      <Tag style={{ margin: 0 }}>{g.items.length} 个配置</Tag>
+                    </Space>
+                  ),
+                  children: (
+                    <Table dataSource={g.items} columns={columns} rowKey="id" pagination={false} size="small"
+                      scroll={{ x: 'max-content' }}
+                      rowSelection={{
+                        selectedRowKeys: selectedKeys,
+                        onChange: (keys: React.Key[]) => setSelectedKeys(keys as number[]),
+                      }} />
+                  ),
+                }))} />
+            );
+          })()}
           {importResult && (
             <Card size="small" style={{ marginTop: 16, background: '#f6ffed' }}>
               <pre style={{ whiteSpace: "pre-wrap", margin: 0, fontSize: 13, color: "#389e0d" }}>{importResult}</pre>
@@ -572,12 +804,13 @@ const DataSync: React.FC = () => {
         </Space>
       </Modal>
 
-      {/* 编辑弹窗 90% */}
+      {/* 编辑弹窗 */}
       <Modal title={editingId ? '编辑导入配置' : '新增导入配置'} open={editOpen}
         onOk={handleSave} onCancel={() => setEditOpen(false)} okText="保存" cancelText="取消"
         width="90%" style={{ top: 20 }}
       >
-        <Form form={form} layout="vertical">
+        {/* 顶部基础信息表单限宽保持紧凑,字段映射/查询条件区使用弹窗全部宽度 */}
+        <Form form={form} layout="vertical" style={{ maxWidth: 1000 }}>
           <Row gutter={16}>
             <Col xs={24} sm={8}>
               <Form.Item label="配置名称" name="name" rules={[{ required: true }]}>
@@ -593,44 +826,119 @@ const DataSync: React.FC = () => {
             <Col xs={24} sm={8}>
               <Form.Item label="PG 数据源" name="pg_source_id" rules={[{ required: true }]}>
                 <Select placeholder="选择数据库" options={pgSources.map(s => ({ value: s.id, label: s.name }))}
-                  onChange={val => { onSelectPgSource(val); form.setFieldsValue({ target_table: undefined }); }} />
+                  onChange={val => { onSelectPgSource(val); form.setFieldsValue({ target_table: undefined, temp_password: undefined }); }} />
               </Form.Item>
             </Col>
           </Row>
           <Row gutter={16}>
+            <Col xs={24} sm={8}>
+              <Form.Item
+                label="目标数据库"
+                extra={(() => {
+                  const sid = form.getFieldValue('pg_source_id');
+                  const src = pgSources.find(s => s.id === sid);
+                  return src ? `必选。默认为数据源默认库 ${src.database}，可指定同一服务器上的其他数据库` : '必选。请先选择 PG 数据源以拉取数据库列表';
+                })()}
+              >
+                <div style={{ display: 'flex', gap: 8 }}>
+                  <Form.Item name="target_database" noStyle
+                    rules={[{ required: true, message: '请选择目标数据库' }]}>
+                    <Select
+                      showSearch
+                      allowClear
+                      placeholder="选择目标数据库"
+                      loading={loadingTargetDatabases}
+                      options={targetDatabases.map(db => ({ value: db, label: db }))}
+                      onChange={onSelectTargetDatabase}
+                      style={{ flex: 1 }}
+                    />
+                  </Form.Item>
+                  <Button
+                    icon={<ReloadOutlined />}
+                    loading={loadingTargetDatabases}
+                    onClick={() => {
+                      const sourceId = form.getFieldValue('pg_source_id');
+                      const pwd = form.getFieldValue('temp_password');
+                      if (sourceId) {
+                        fetchDatabasesForTarget(sourceId, pwd);
+                      } else {
+                        message.warning('请先选择 PG 数据源');
+                      }
+                    }}
+                    title="刷新数据库列表"
+                  />
+                </div>
+              </Form.Item>
+              {targetRequirePassword && (
+                <Form.Item
+                  label="临时连接密码"
+                  name="temp_password"
+                  extra="该数据源未配置密码，输入后点击刷新按钮获取数据库列表"
+                >
+                  <Input.Password
+                    placeholder="请输入 PostgreSQL 数据库密码"
+                    onBlur={(e) => {
+                      const val = e.target.value;
+                      const sourceId = form.getFieldValue('pg_source_id');
+                      if (sourceId && val) {
+                        fetchDatabasesForTarget(sourceId, val);
+                      }
+                    }}
+                  />
+                </Form.Item>
+              )}
+            </Col>
             <Col xs={24} sm={8}>
               <Form.Item label="目标表" name="target_table" rules={[{ required: true }]}>
                 <Select placeholder="选择表" options={pgTables.map(t => ({ value: t, label: t }))}
                   onChange={onSelectTargetTable} showSearch />
               </Form.Item>
             </Col>
-            <Col xs={12} sm={8}>
-              <Form.Item label="每页条数" name="per_page">
-                <Select options={[50, 100, 200, 500, 1000].map(n => ({ value: n, label: String(n) }))} />
-              </Form.Item>
-            </Col>
-            <Col xs={12} sm={8}>
-              <Form.Item label="起始页" name="page">
-                <Input type="number" min={1} />
-              </Form.Item>
+            <Col xs={24} sm={8}>
+              <Row gutter={8}>
+                <Col span={12}>
+                  <Form.Item label="每页条数" name="per_page">
+                    <Select options={[50, 100, 200, 500, 1000].map(n => ({ value: n, label: String(n) }))} />
+                  </Form.Item>
+                </Col>
+                <Col span={12}>
+                  <Form.Item label="起始页" name="page">
+                    <Input type="number" min={1} />
+                  </Form.Item>
+                </Col>
+              </Row>
             </Col>
           </Row>
         </Form>
 
         <ConditionBuilder value={editQuery} onChange={setEditQuery}
           knownFields={Object.fromEntries(srcFields.map(f => [f.name, f.description]))}
-          onPreview={handleEditFetchFields} />
-
-        <Space style={{ marginBottom: 12 }}>
-          <Button icon={<EyeOutlined />} onClick={handleEditFetchFields}
-            loading={editPreviewLoading}
-            disabled={!form.getFieldValue("remote_table_id")}>
-            获取远程字段结构
-          </Button>
-          {srcFields.length > 0 && (
-            <Tag color="blue">{srcFields.length} 个字段</Tag>
-          )}
-        </Space>
+          onPreview={handleEditFetchFields}
+          extra={
+            <Space size="small" wrap>
+              <Button size="small" icon={<EyeOutlined />} onClick={handleEditFetchFields}
+                loading={editPreviewLoading}
+                disabled={!form.getFieldValue("remote_table_id")}>
+                获取远程字段结构
+              </Button>
+              <Button size="small" icon={<ThunderboltOutlined />} onClick={handleAutoMatch}
+                disabled={!form.getFieldValue("remote_table_id") || !form.getFieldValue("target_table")}>
+                自动匹配
+              </Button>
+              <Popconfirm title="确定清空所有字段映射？" description="将删除全部映射行并恢复为空白"
+                okText="清空" cancelText="取消" okButtonProps={{ danger: true }}
+                disabled={!fields.some(f => f.srcField || f.distField)}
+                onConfirm={handleClearMappings}>
+                <Button size="small" icon={<ClearOutlined />}
+                  disabled={!fields.some(f => f.srcField || f.distField)}>
+                  清空映射
+                </Button>
+              </Popconfirm>
+              {srcFields.length > 0 && (
+                <Tag color="blue">{srcFields.length} 个字段</Tag>
+              )}
+            </Space>
+          } />
 
         {editPreviewData && editPreviewData.length > 0 && (
           <Card size="small" title="样本数据" style={{ marginBottom: 12 }} type="inner">
@@ -666,7 +974,7 @@ const DataSync: React.FC = () => {
                   <Col xs={24}>
                     <div style={{ marginBottom: 4 }}>
                       <span style={{ fontSize: 12, color: '#8c8c8c', display: 'block', marginBottom: 2 }}>源字段:</span>
-                      <Select placeholder="源字段" style={{ width: '100%' }} size="small" showSearch
+                      <Select placeholder="源字段" style={{ width: '100%' }} size="small" showSearch allowClear
                         value={f.srcField || undefined}
                         onChange={val => updateField(f.key, { srcField: val || '' })}
                         filterOption={(input, option) => {
@@ -685,10 +993,18 @@ const DataSync: React.FC = () => {
                   <Col xs={24}>
                     <div style={{ marginBottom: 4 }}>
                       <span style={{ fontSize: 12, color: '#8c8c8c', display: 'block', marginBottom: 2 }}>目标字段:</span>
-                      <Select placeholder="目标字段" style={{ width: '100%' }} size="small" showSearch
+                      <Select placeholder="目标字段" style={{ width: '100%' }} size="small" showSearch allowClear
                         value={f.distField || undefined}
                         onChange={val => updateField(f.key, { distField: val || '' })}
-                        options={dstFields.map(d => ({ value: d, label: d }))}
+                        options={dstFields.map(d => ({
+                          value: d.name,
+                          label: `${d.name}${d.comment ? ` (${d.comment})` : ''}`,
+                        }))}
+                        filterOption={(input, option) => {
+                          const q = input.toLowerCase();
+                          return String(option?.value ?? '').toLowerCase().includes(q)
+                            || String((option as any)?.label ?? '').toLowerCase().includes(q);
+                        }}
                       />
                     </div>
                   </Col>
@@ -717,7 +1033,7 @@ const DataSync: React.FC = () => {
               <Row gutter={6} style={{ background: '#fafafa', padding: '6px 0', borderRadius: 6, alignItems: 'center' }}>
                 <Col span={1} style={{ textAlign: 'center', lineHeight: '32px', fontSize: 12, color: '#8c8c8c' }}>{i + 1}</Col>
                 <Col span={3}>
-                  <Select placeholder="源字段" style={{ width: '100%' }} size="small" showSearch
+                  <Select placeholder="源字段" style={{ width: '100%' }} size="small" showSearch allowClear
                     value={f.srcField || undefined}
                     onChange={val => updateField(f.key, { srcField: val || '' })}
                     filterOption={(input, option) => {
@@ -737,10 +1053,22 @@ const DataSync: React.FC = () => {
                 </Col>
                 <Col span={1} style={{ textAlign: 'center' }}>→</Col>
                 <Col span={3}>
-                  <Select placeholder="目标字段" style={{ width: '100%' }} size="small" showSearch
+                  <Select placeholder="目标字段" style={{ width: '100%' }} size="small" showSearch allowClear
                     value={f.distField || undefined}
                     onChange={val => updateField(f.key, { distField: val || '' })}
-                    options={dstFields.map(d => ({ value: d, label: d }))}
+                    options={dstFields.map(d => ({
+                      value: d.name,
+                      comment: d.comment,
+                      label: React.createElement('span', null,
+                        d.name,
+                        React.createElement('span', { style: { color: '#8c8c8c', fontSize: 11, marginLeft: 6 } }, d.comment || d.type)
+                      ),
+                    }))}
+                    filterOption={(input, option: any) => {
+                      const q = input.toLowerCase();
+                      return String(option?.value ?? '').toLowerCase().includes(q)
+                        || String(option?.comment ?? '').toLowerCase().includes(q);
+                    }}
                   />
                 </Col>
                 <Col span={2}>
@@ -761,8 +1089,12 @@ const DataSync: React.FC = () => {
                     <Checkbox checked={f.isPk} onChange={e => updateField(f.key, { isPk: e.target.checked })} />
                   </Tooltip>
                 </Col>
-                <Col span={1}>
-                  <Button size="small" danger onClick={() => removeField(f.key)} disabled={fields.length <= 1}>删</Button>
+                <Col span={1} style={{ textAlign: 'center' }}>
+                  <Tooltip title="删除此行">
+                    <Button size="small" type="text" danger icon={<CloseOutlined />}
+                      onClick={() => removeField(f.key)} disabled={fields.length <= 1}
+                      style={{ width: 22, height: 22, padding: 0, minWidth: 22 }} />
+                  </Tooltip>
                 </Col>
               </Row>
             )}

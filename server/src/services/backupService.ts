@@ -5,6 +5,7 @@ import {
   listBackupConfigs, getBackupConfig, createBackupLog, updateBackupLog,
   listPgDatasources, updateBackupRunTime, updateTaskExecutionLog,
 } from '../db/sqlite';
+import { notifyTaskFailure } from './notifyService';
 
 let backupInterval: NodeJS.Timeout | null = null;
 
@@ -38,6 +39,16 @@ function stopProgressLogUpdates(logId: number) {
 
 // 存储正在运行的 pg_dump 子进程，用于停止
 const runningPgDumps = new Map<number, { process: any; logId: number }>();
+
+function tailText(value: string, maxLength = 1200): string {
+  const text = value.trim();
+  if (text.length <= maxLength) return text;
+  return text.slice(text.length - maxLength);
+}
+
+function quotePgIdent(value: string): string {
+  return `"${value.replace(/"/g, '""')}"`;
+}
 
 // 安装进度跟踪
 let installProgress: { status: string; message: string; stage: string } = { status: 'idle', message: '', stage: '' };
@@ -177,6 +188,7 @@ export const restoreProgressMap = new Map<number, {
   currentTable: string;
   totalTables: number;
   doneTables: number;
+  filePath?: string;
 }>();
 
 export function getRestoreProgress(logId: number) {
@@ -383,7 +395,7 @@ export function startBackupScheduler(): void {
       for (const cfg of configs) {
         if (!cfg.enabled || !cfg.next_run_at) continue;
         if (cfg.next_run_at <= nowStr) {
-          runBackup(cfg).catch(err => console.error('[Backup] 执行失败:', err.message));
+          runBackup(cfg, true).catch(err => console.error('[Backup] 执行失败:', err.message));
           const next = calcNextRun(cfg);
           await updateBackupRunTime(cfg.id, next);
         }
@@ -591,7 +603,7 @@ function spawnPgDump(
 /**
  * 执行备份（支持多种格式，带进度跟踪）
  */
-export async function runBackup(cfg: any): Promise<void> {
+export async function runBackup(cfg: any, notify: boolean = false): Promise<void> {
   const backupFormat = cfg.backup_format || 'sql';
   console.log(`[Backup] 开始备份: ${cfg.name} (${cfg.database_name}), 格式: ${backupFormat}`);
 
@@ -677,6 +689,15 @@ export async function runBackup(cfg: any): Promise<void> {
     const prog = backupProgressMap.get(progKey);
     if (prog) { prog.status = 'error'; prog.message = err.message; }
     console.error('[Backup] 失败:', err.message);
+    // 定时调度触发的备份失败时发送告警邮件(手动"立即备份"不通知)
+    if (notify) {
+      notifyTaskFailure('backup', `backup-${cfg.id}`, `备份「${cfg.name}」失败`, [
+        ['备份配置', cfg.name || String(cfg.id)],
+        ['数据库名', cfg.database_name || '-'],
+        ['备份格式', backupFormat],
+        ['错误信息', (err.message || String(err)).slice(0, 2000)],
+      ]);
+    }
   }
 
   // 30秒后清除进度
@@ -860,7 +881,8 @@ export async function restoreBackup(
         message: '准备恢复中...',
         currentTable: '',
         totalTables,
-        doneTables: 0
+        doneTables: 0,
+        filePath: filepath
       });
     }
 
@@ -924,6 +946,8 @@ export async function restoreBackup(
         '-U', targetSrc.user,
         '-d', dbName,
         '-v', // 详细输出，方便匹配进度
+        '--no-owner',
+        '--no-privileges',
       ];
 
       // 如果需要禁用触发器，则添加 --disable-triggers 参数
@@ -953,22 +977,9 @@ export async function restoreBackup(
       args.push(filepath);
     }
 
-    const commandLabel = isSql ? 'psql' : 'pg_restore';
-    console.log(`[Restore] 启动 ${commandLabel}，目标库: ${dbName}，参数: ${args.map(a => a === targetSrc.password ? '****' : a).join(' ')}`);
-
-    const child = spawn(pgToolsPath, args, { env });
-    if (options.logId) {
-      runningRestores.set(options.logId, child);
-    }
-    
-    // 消费 stdout 防止缓冲区溢出导致挂起
-    child.stdout.on('data', () => {});
-    let stderr = '';
-    
-    child.stderr.on('data', (data) => {
-      const outputStr = data.toString();
+    const handleRestoreOutput = (outputStr: string) => {
       stderr += outputStr;
-      
+
       if (options.logId) {
         const lines = outputStr.split('\n');
         for (const line of lines) {
@@ -1002,25 +1013,390 @@ export async function restoreBackup(
           }
         }
       }
+    };
+
+    const runFilteredSqlRestore = (): Promise<{ success: boolean; message: string; stderr: string }> => {
+      return new Promise((fallbackResolve) => {
+        const tempDir = path.join(path.dirname(filepath), '.restore-tmp');
+        fs.mkdirSync(tempDir, { recursive: true });
+        const rawSqlPath = path.join(tempDir, `restore-${Date.now()}-${Math.random().toString(36).slice(2)}.sql`);
+        const filteredSqlPath = rawSqlPath.replace(/\.sql$/, '.filtered.sql');
+        const restoreArgs = ['-v', '--no-owner', '--no-privileges', '-f', rawSqlPath];
+
+        if (options.disableTriggers) {
+          restoreArgs.push('--disable-triggers');
+        }
+        if (options.overwrite) {
+          restoreArgs.push('--clean', '--if-exists');
+        }
+        if (options.schema) {
+          restoreArgs.push('-n', options.schema);
+        }
+        if (options.tables && options.tables.length > 0) {
+          for (const table of options.tables) {
+            const pureTableName = table.includes('.') ? table.split('.').slice(1).join('.') : table;
+            restoreArgs.push('-t', pureTableName);
+          }
+        }
+        restoreArgs.push(filepath);
+
+        const psqlArgs = [
+          '-h', targetSrc.host,
+          '-p', String(targetSrc.port),
+          '-U', targetSrc.user,
+          '-d', dbName,
+          '-v', 'ON_ERROR_STOP=1',
+          '-f', filteredSqlPath,
+        ];
+
+        console.log(`[Restore] 检测到 transaction_timeout 兼容问题，改用离线 SQL 过滤恢复: pg_restore ${restoreArgs.join(' ')} && psql ${psqlArgs.join(' ')}`);
+
+        if (options.logId) {
+          const prog = restoreProgressMap.get(options.logId);
+          if (prog) {
+            prog.message = '目标库不支持 transaction_timeout，正在使用兼容模式重试...';
+            prog.currentTable = '';
+          }
+        }
+
+        const pgRestorePath = getPgRestorePath();
+        const psqlPath = getPsqlPath();
+        const pgRestore = spawn(pgRestorePath, restoreArgs, { env });
+        let pgRestoreStderr = '';
+        let psqlStderr = '';
+        let resolved = false;
+
+        const runningPair = {
+          kill: () => {
+            try { pgRestore.kill('SIGTERM'); } catch {}
+          },
+        };
+        if (options.logId) {
+          runningRestores.set(options.logId, runningPair);
+        }
+
+        const cleanup = () => {
+          try { fs.unlinkSync(rawSqlPath); } catch {}
+          try { fs.unlinkSync(filteredSqlPath); } catch {}
+        };
+
+        const resolveOnce = (result: { success: boolean; message: string; stderr: string }) => {
+          if (resolved) return;
+          resolved = true;
+          if (options.logId) {
+            runningRestores.delete(options.logId);
+          }
+          cleanup();
+          fallbackResolve(result);
+        };
+
+        const truncateSelectedTables = async () => {
+          if (!options.tables || options.tables.length === 0) return;
+          const { Pool } = require('pg');
+          const pool = new Pool({
+            host: targetSrc.host,
+            port: Number(targetSrc.port) || 5432,
+            user: targetSrc.user,
+            password: targetSrc.password,
+            database: dbName,
+            connectionTimeoutMillis: 5000,
+          });
+          try {
+            const tableNames = options.tables.map(table => {
+              const [schema, ...nameParts] = table.includes('.') ? table.split('.') : ['public', table];
+              return `${quotePgIdent(schema)}.${quotePgIdent(nameParts.join('.'))}`;
+            });
+            await pool.query(`TRUNCATE TABLE ${tableNames.join(', ')} RESTART IDENTITY CASCADE`);
+          } finally {
+            try { await pool.end(); } catch {}
+          }
+        };
+
+        const filterSqlFile = () => {
+          const sql = fs.readFileSync(rawSqlPath, 'utf8');
+          const filtered = sql
+            .split(/\r?\n/)
+            .filter(line => !/^\s*SET\s+transaction_timeout\s*=/i.test(line))
+            .join('\n');
+          fs.writeFileSync(filteredSqlPath, filtered);
+        };
+
+        const runDataOnlyFallback = async () => {
+          if (!options.overwrite || !options.tables || options.tables.length === 0) {
+            return false;
+          }
+
+          if (options.logId) {
+            const prog = restoreProgressMap.get(options.logId);
+            if (prog) {
+              prog.message = '目标表有依赖视图，正在改用清空数据后仅恢复数据...';
+              prog.currentTable = '';
+            }
+          }
+
+          try {
+            await truncateSelectedTables();
+          } catch (err: any) {
+            resolveOnce({
+              success: false,
+              stderr: psqlStderr || pgRestoreStderr,
+              message: `目标表存在依赖对象，且清空目标表失败: ${err.message || String(err)}`,
+            });
+            return true;
+          }
+
+          const dataOnlyRawSqlPath = rawSqlPath.replace(/\.sql$/, '.data-only.sql');
+          const dataOnlyFilteredSqlPath = rawSqlPath.replace(/\.sql$/, '.data-only.filtered.sql');
+          const dataOnlyRestoreArgs = ['-v', '--data-only', '--no-owner', '--no-privileges', '-f', dataOnlyRawSqlPath];
+          if (options.disableTriggers) {
+            dataOnlyRestoreArgs.push('--disable-triggers');
+          }
+          for (const table of options.tables) {
+            const pureTableName = table.includes('.') ? table.split('.').slice(1).join('.') : table;
+            dataOnlyRestoreArgs.push('-t', pureTableName);
+          }
+          dataOnlyRestoreArgs.push(filepath);
+
+          const pgRestorePath = getPgRestorePath();
+          const psqlPath = getPsqlPath();
+          const dataOnlyPgRestore = spawn(pgRestorePath, dataOnlyRestoreArgs, { env });
+          let dataOnlyPgRestoreStderr = '';
+          let dataOnlyPsqlStderr = '';
+
+          if (options.logId) {
+            runningRestores.set(options.logId, {
+              kill: () => {
+                try { dataOnlyPgRestore.kill('SIGTERM'); } catch {}
+              },
+            });
+          }
+
+          dataOnlyPgRestore.stdout.on('data', () => {});
+          dataOnlyPgRestore.stderr.on('data', (data) => {
+            const outputStr = data.toString();
+            dataOnlyPgRestoreStderr += outputStr;
+            handleRestoreOutput(outputStr);
+          });
+          dataOnlyPgRestore.on('error', (err) => {
+            resolveOnce({
+              success: false,
+              stderr: dataOnlyPgRestoreStderr,
+              message: `仅数据兼容模式 pg_restore 启动失败: ${err.message}`,
+            });
+          });
+          dataOnlyPgRestore.on('close', (dataOnlyRestoreCode) => {
+            if (dataOnlyRestoreCode !== 0) {
+              resolveOnce({
+                success: false,
+                stderr: dataOnlyPgRestoreStderr,
+                message: `仅数据兼容模式导出 SQL 失败: ${tailText(dataOnlyPgRestoreStderr) || `pg_restore=${dataOnlyRestoreCode}`}`,
+              });
+              return;
+            }
+
+            try {
+              const sql = fs.readFileSync(dataOnlyRawSqlPath, 'utf8');
+              const filtered = sql
+                .split(/\r?\n/)
+                .filter(line => !/^\s*SET\s+transaction_timeout\s*=/i.test(line))
+                .join('\n');
+              fs.writeFileSync(dataOnlyFilteredSqlPath, filtered);
+            } catch (err: any) {
+              resolveOnce({
+                success: false,
+                stderr: dataOnlyPgRestoreStderr,
+                message: `仅数据兼容模式过滤 SQL 失败: ${err.message || String(err)}`,
+              });
+              return;
+            }
+
+            const dataOnlyPsqlArgs = [
+              '-h', targetSrc.host,
+              '-p', String(targetSrc.port),
+              '-U', targetSrc.user,
+              '-d', dbName,
+              '-v', 'ON_ERROR_STOP=1',
+              '-f', dataOnlyFilteredSqlPath,
+            ];
+            const dataOnlyPsql = spawn(psqlPath, dataOnlyPsqlArgs, { env });
+            if (options.logId) {
+              runningRestores.set(options.logId, {
+                kill: () => {
+                  try { dataOnlyPsql.kill('SIGTERM'); } catch {}
+                },
+              });
+            }
+            dataOnlyPsql.stdout.on('data', () => {});
+            dataOnlyPsql.stderr.on('data', (data) => {
+              dataOnlyPsqlStderr += data.toString();
+            });
+            dataOnlyPsql.on('error', (err) => {
+              resolveOnce({
+                success: false,
+                stderr: dataOnlyPsqlStderr || dataOnlyPgRestoreStderr,
+                message: `仅数据兼容模式 psql 启动失败: ${err.message}`,
+              });
+            });
+            dataOnlyPsql.on('close', (dataOnlyPsqlCode) => {
+              try { fs.unlinkSync(dataOnlyRawSqlPath); } catch {}
+              try { fs.unlinkSync(dataOnlyFilteredSqlPath); } catch {}
+              const success = dataOnlyPsqlCode === 0;
+              const errorText = dataOnlyPsqlStderr || dataOnlyPgRestoreStderr;
+              resolveOnce({
+                success,
+                stderr: errorText,
+                message: success
+                  ? '恢复成功（目标表存在依赖视图，已清空表后仅恢复数据）'
+                  : `仅数据兼容模式恢复失败: ${tailText(errorText) || `psql=${dataOnlyPsqlCode}`}`,
+              });
+            });
+          });
+
+          return true;
+        };
+
+        pgRestore.stdout.on('data', () => {});
+        pgRestore.stderr.on('data', (data) => {
+          const outputStr = data.toString();
+          pgRestoreStderr += outputStr;
+          handleRestoreOutput(outputStr);
+        });
+        pgRestore.on('close', (code) => {
+          if (code !== 0) {
+            resolveOnce({
+              success: false,
+              stderr: pgRestoreStderr,
+              message: `兼容模式导出 SQL 失败: ${tailText(pgRestoreStderr) || `pg_restore=${code}`}`,
+            });
+            return;
+          }
+
+          try {
+            filterSqlFile();
+          } catch (err: any) {
+            resolveOnce({
+              success: false,
+              stderr: pgRestoreStderr,
+              message: `兼容模式过滤 SQL 失败: ${err.message || String(err)}`,
+            });
+            return;
+          }
+
+          const psql = spawn(psqlPath, psqlArgs, { env });
+          if (options.logId) {
+            runningRestores.set(options.logId, {
+              kill: () => {
+                try { psql.kill('SIGTERM'); } catch {}
+              },
+            });
+          }
+          psql.stdout.on('data', () => {});
+          psql.stderr.on('data', (data) => {
+            psqlStderr += data.toString();
+          });
+          psql.on('close', (psqlCode) => {
+            const success = psqlCode === 0;
+            const errorText = psqlStderr || pgRestoreStderr;
+            if (!success && /depends on table|Use DROP \.\.\. CASCADE/i.test(errorText)) {
+              runDataOnlyFallback().catch((err: any) => {
+                resolveOnce({
+                  success: false,
+                  stderr: errorText,
+                  message: `仅数据兼容模式启动失败: ${err.message || String(err)}`,
+                });
+              });
+              return;
+            }
+            resolveOnce({
+              success,
+              stderr: errorText,
+              message: success
+                ? '恢复成功（已自动过滤 transaction_timeout 兼容项）'
+                : `兼容模式恢复失败: ${tailText(errorText) || `psql=${psqlCode}`}`,
+            });
+          });
+          psql.on('error', (err) => {
+            resolveOnce({
+              success: false,
+              stderr: psqlStderr || pgRestoreStderr,
+              message: `psql 启动失败: ${err.message}`,
+            });
+          });
+        });
+        pgRestore.on('error', (err) => {
+          resolveOnce({
+            success: false,
+            stderr: pgRestoreStderr,
+            message: `pg_restore 启动失败: ${err.message}`,
+          });
+        });
+      });
+    };
+
+    const commandLabel = isSql ? 'psql' : 'pg_restore';
+    console.log(`[Restore] 启动 ${commandLabel}，目标库: ${dbName}，参数: ${args.map(a => a === targetSrc.password ? '****' : a).join(' ')}`);
+
+    const child = spawn(pgToolsPath, args, { env });
+    if (options.logId) {
+      runningRestores.set(options.logId, child);
+    }
+
+    // 消费 stdout 防止缓冲区溢出导致挂起
+    child.stdout.on('data', () => {});
+    let stderr = '';
+
+    child.stderr.on('data', (data) => {
+      handleRestoreOutput(data.toString());
     });
-    
-    child.on('close', (code) => {
+
+    child.on('close', async (code) => {
       if (options.logId) {
         runningRestores.delete(options.logId);
       }
       // 注意：pg_restore 和 psql 在有一些警告或非致命错误时可能会退出 1
       // 如果退出码是 1，且 stderr 中包含 critical 错误（如表已存在、主键冲突等），应视为失败
       let isSuccess = code === 0;
+      const hasTransactionTimeoutCompatibilityError = /unrecognized configuration parameter "transaction_timeout"/i.test(stderr);
       if (code === 1) {
         // 'does not exist' 属于在清理阶段（DROP TABLE/CONSTRAINT）时由于表本身不存在产生的无害警告，此处排除
         // 同样，'schema ".*" already exists' 也属于由于自动创建而产生的无害警告，也予以排除
         // 但如果提示关系/表已存在、主键/约束冲突、或是 schema/database 不存在，则是致命错误
         const hasCriticalError = /(relation|table|index|constraint|type|sequence) ".*" already exists|duplicate key|violates|schema ".*" does not exist|database ".*" does not exist/i.test(stderr);
-        if (!hasCriticalError) {
+        if (!hasCriticalError && !hasTransactionTimeoutCompatibilityError) {
           isSuccess = true;
         }
       }
       
+      if (!isSuccess && !isSql && hasTransactionTimeoutCompatibilityError) {
+        const fallback = await runFilteredSqlRestore();
+        isSuccess = fallback.success;
+        stderr = fallback.stderr;
+
+        if (options.logId) {
+          const prog = restoreProgressMap.get(options.logId);
+          if (prog) {
+            if (fallback.success) {
+              prog.status = 'success';
+              prog.progress = 100;
+              prog.message = fallback.message;
+              if (prog.totalTables > 0) {
+                prog.doneTables = prog.totalTables;
+              }
+            } else {
+              prog.status = 'error';
+              prog.message = tailText(fallback.message, 300);
+            }
+          }
+        }
+
+        setTimeout(() => {
+          if (options.logId) restoreProgressMap.delete(options.logId);
+        }, 30000);
+
+        resolve(fallback);
+        return;
+      }
+
       if (options.logId) {
         const prog = restoreProgressMap.get(options.logId);
         if (prog) {
@@ -1033,7 +1409,7 @@ export async function restoreBackup(
             }
           } else {
             prog.status = 'error';
-            prog.message = `恢复失败 (exit code ${code}): ${stderr.trim().substring(0, 300) || '未知错误'}`;
+            prog.message = `恢复失败 (exit code ${code}): ${tailText(stderr, 300) || '未知错误'}`;
           }
         }
         
@@ -1046,7 +1422,7 @@ export async function restoreBackup(
       if (isSuccess) {
         resolve({
           success: true,
-          message: code === 1 ? `恢复完成，但有部分警告: ${stderr.trim().substring(0, 300)}` : '恢复成功'
+          message: code === 1 ? `恢复完成，但有部分警告: ${tailText(stderr, 300)}` : '恢复成功'
         });
       } else {
         resolve({
@@ -1075,4 +1451,3 @@ export async function restoreBackup(
     });
   });
 }
-

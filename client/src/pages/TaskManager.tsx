@@ -6,11 +6,12 @@ import {
 import {
   PlusOutlined, EditOutlined, DeleteOutlined, PlayCircleOutlined, ClockCircleOutlined,
   HistoryOutlined, DownloadOutlined, CloseCircleOutlined,
-  DatabaseOutlined, SyncOutlined,
+  DatabaseOutlined, SyncOutlined, UpOutlined, DownOutlined, FolderOpenOutlined,
 } from '@ant-design/icons';
 import {
   listSyncTasks, createSyncTask, updateSyncTask, deleteSyncTask, runSyncTask,
   listSyncConfigs, listTaskExecutions, listBackupConfigsNames, stopBackup, deleteTaskExecutionLogs,
+  listFileBackupConfigsNames, stopFileBackup,
 } from '../api';
 import type { SyncTask, SyncConfig, TaskExecutionLog } from '../api';
 
@@ -27,6 +28,7 @@ const TaskManager: React.FC = () => {
     return () => window.removeEventListener('resize', handleResize);
   }, []);
   const [backupConfigs, setBackupConfigs] = useState<{ id: number; name: string }[]>([]);
+  const [fileBackupConfigs, setFileBackupConfigs] = useState<{ id: number; name: string }[]>([]);
   const [loading, setLoading] = useState(false);
   const [editOpen, setEditOpen] = useState(false);
   const [editingId, setEditingId] = useState<number | null>(null);
@@ -82,12 +84,13 @@ const TaskManager: React.FC = () => {
   const loadAll = async () => {
     setLoading(true);
     try {
-      const [taskRes, cfgRes, backupRes] = await Promise.all([
-        listSyncTasks(), listSyncConfigs(), listBackupConfigsNames(),
+      const [taskRes, cfgRes, backupRes, fileBackupRes] = await Promise.all([
+        listSyncTasks(), listSyncConfigs(), listBackupConfigsNames(), listFileBackupConfigsNames(),
       ]);
       if (taskRes.success) setTasks(taskRes.data);
       if (cfgRes.success) setConfigs(cfgRes.data);
       if (backupRes.success) setBackupConfigs(backupRes.data);
+      if (fileBackupRes.success) setFileBackupConfigs(fileBackupRes.data);
 
       // 如果有正在执行的任务，检查执行日志看是否已完成
       if (running !== null) {
@@ -106,7 +109,7 @@ const TaskManager: React.FC = () => {
   const openAdd = () => {
     setEditingId(null);
     form.resetFields();
-    form.setFieldsValue({ task_type: 'sync', type: 'interval', interval_unit: 'minutes', interval_value: 30, enabled: 1, sync_config_ids: [] });
+    form.setFieldsValue({ task_type: 'sync', type: 'interval', interval_unit: 'minutes', interval_value: 30, enabled: 1, sort_order: 0, sync_config_ids: [] });
     setEditOpen(true);
   };
 
@@ -122,6 +125,12 @@ const TaskManager: React.FC = () => {
         ...task,
         task_type: 'sync',
         sync_config_ids: syncConfigIds,
+        scheduled_days: task.scheduled_days ? task.scheduled_days.split(',').filter(Boolean).map(Number) : [],
+      });
+    } else if (task.task_type === 'file_backup') {
+      form.setFieldsValue({
+        ...task,
+        task_type: 'file_backup',
         scheduled_days: task.scheduled_days ? task.scheduled_days.split(',').filter(Boolean).map(Number) : [],
       });
     } else {
@@ -142,6 +151,7 @@ const TaskManager: React.FC = () => {
       let payload: any = {
         name: values.name,
         task_type: taskType,
+        sort_order: values.sort_order || 0,
         type: values.type,
         interval_value: values.interval_value || 0,
         interval_unit: values.interval_unit || 'minutes',
@@ -152,6 +162,13 @@ const TaskManager: React.FC = () => {
       };
       if (taskType === 'backup') {
         payload.backup_config_id = values.backup_config_id || 0;
+        payload.backup_dir = '';
+        payload.keep_days = 0;
+        payload.sync_config_id = 0;
+        payload.sync_config_ids = '[]';
+      } else if (taskType === 'file_backup') {
+        payload.file_backup_config_id = values.file_backup_config_id || 0;
+        payload.backup_config_id = 0;
         payload.backup_dir = '';
         payload.keep_days = 0;
         payload.sync_config_id = 0;
@@ -237,9 +254,9 @@ const TaskManager: React.FC = () => {
       const res = await runSyncTask(id);
       if (res.success) {
         message.success(res.message);
-        // 对于备份任务，不立即清除 running 状态（需要等到执行完成）
+        // 对于备份类任务，不立即清除 running 状态（需要等到执行完成）
         const task = tasks.find(t => t.id === id);
-        if (task && task.task_type === 'backup') {
+        if (task && (task.task_type === 'backup' || task.task_type === 'file_backup')) {
           // 保持 running 状态，loadAll 会检查并更新
         } else {
           setRunning(null);
@@ -267,6 +284,17 @@ const TaskManager: React.FC = () => {
           scheduled_days: task.scheduled_days, enabled: checked ? 1 : 0,
           task_type: 'backup',
           backup_config_id: task.backup_config_id,
+        });
+      } else if (task.task_type === 'file_backup') {
+        await updateSyncTask(task.id, {
+          name: task.name,
+          sync_config_id: task.sync_config_id,
+          sync_config_ids: task.sync_config_ids || '[]',
+          type: task.type, interval_value: task.interval_value, interval_unit: task.interval_unit,
+          cron_expr: task.cron_expr, scheduled_time: task.scheduled_time,
+          scheduled_days: task.scheduled_days, enabled: checked ? 1 : 0,
+          task_type: 'file_backup',
+          file_backup_config_id: task.file_backup_config_id,
         });
       } else {
         await updateSyncTask(task.id, {
@@ -341,14 +369,59 @@ const TaskManager: React.FC = () => {
     }
   };
 
+  const handleStopFileBackup = async (configId: number) => {
+    setStoppingId(configId);
+    setRunning(null);
+    try {
+      const res = await stopFileBackup(configId);
+      if (res.success) {
+        message.success(res.message);
+        setExecLogs(prev => prev.map(log => {
+          if (log.status === 'running' && log.sync_config_id === configId) {
+            return { ...log, status: 'error' as const, error_message: '用户手动停止' };
+          }
+          return log;
+        }));
+      } else {
+        message.error(res.message);
+      }
+      if (logTaskId) await loadLogs(logTaskId);
+      loadAll();
+    } catch (err: any) { message.error('停止失败: ' + (err.message || '')); }
+    finally {
+      setStoppingId(null);
+      setTimeout(() => { if (logTaskId) loadLogs(logTaskId); }, 1000);
+    }
+  };
+
   const backupConfigMap = Object.fromEntries(backupConfigs.map(c => [c.id, c]));
+  const fileBackupConfigMap = Object.fromEntries(fileBackupConfigs.map(c => [c.id, c]));
+
+  // 调整任务内同步配置的执行顺序
+  const moveConfig = (ids: number[], idx: number, dir: -1 | 1) => {
+    const next = [...ids];
+    const target = idx + dir;
+    if (target < 0 || target >= next.length) return;
+    [next[idx], next[target]] = [next[target], next[idx]];
+    form.setFieldsValue({ sync_config_ids: next });
+  };
 
   const columns = [
     {
       title: '类型', dataIndex: 'task_type', key: 'type', width: 80,
       render: (v: string) => v === 'backup'
         ? <Tag icon={<DatabaseOutlined />} color="green">备份</Tag>
-        : <Tag icon={<SyncOutlined />} color="blue">同步</Tag>,
+        : v === 'file_backup'
+          ? <Tag icon={<FolderOpenOutlined />} color="orange">文件备份</Tag>
+          : <Tag icon={<SyncOutlined />} color="blue">同步</Tag>,
+    },
+    {
+      title: '顺序', dataIndex: 'sort_order', key: 'sort_order', width: 60,
+      render: (v: number) => (
+        <Tooltip title="同一时刻到点的任务按此顺序排队串行执行，数字小的先执行">
+          <Tag color="orange" style={{ margin: 0 }}>{v || 0}</Tag>
+        </Tooltip>
+      ),
     },
     { title: '任务名称', dataIndex: 'name', key: 'name', width: 180 },
     {
@@ -358,9 +431,17 @@ const TaskManager: React.FC = () => {
           const bc = backupConfigMap[r.backup_config_id];
           return bc ? <Tag color="green">{bc.name}</Tag> : <Text type="secondary">备份 #{r.backup_config_id}</Text>;
         }
+        if (r.task_type === 'file_backup') {
+          const fc = fileBackupConfigMap[r.file_backup_config_id];
+          return fc ? <Tag color="orange">{fc.name}</Tag> : <Text type="secondary">文件备份 #{r.file_backup_config_id}</Text>;
+        }
         try {
           const ids: number[] = JSON.parse(r.sync_config_ids || '[]');
-          return ids.length ? ids.map(id => <Tag key={id} color="blue">配置#{id}</Tag>) : <Text type="secondary">-</Text>;
+          // 标签顺序即任务内配置的执行顺序，加序号前缀展示
+          return ids.length ? ids.map((id, idx) => {
+            const c = configs.find(x => x.id === id);
+            return <Tag key={id} color="blue">{idx + 1}. {c ? c.name : `配置#${id}`}</Tag>;
+          }) : <Text type="secondary">-</Text>;
         } catch { return <Text type="secondary">-</Text>; }
       },
     },
@@ -438,19 +519,22 @@ const TaskManager: React.FC = () => {
           const done = r.success_count || 0;
           const total = r.total_records || 0;
           const isBackup = r.task_type === 'backup';
-          const label = isBackup ? `表 ${done}/${total} (${pct}%)` : (total > 0 ? `${done} / ${total}` : `${pct}%`);
+          const isFileBackup = r.task_type === 'file_backup';
+          const label = isBackup ? `表 ${done}/${total} (${pct}%)`
+            : isFileBackup ? `文件 ${done} (${pct}%)`
+            : (total > 0 ? `${done} / ${total}` : `${pct}%`);
           return (
             <Space size="small">
               <Progress percent={pct} size="small" status="active" style={{ width: 100 }}
                 format={() => label} />
               <Button type="text" size="small" danger icon={<CloseCircleOutlined />}
                 loading={stoppingId === (r.sync_config_id || 0)}
-                onClick={() => handleStopBackup(r.sync_config_id || 0)} />
+                onClick={() => isFileBackup ? handleStopFileBackup(r.sync_config_id || 0) : handleStopBackup(r.sync_config_id || 0)} />
             </Space>
           );
         }
         if (r.status === 'success') {
-          if (r.task_type === 'backup') {
+          if (r.task_type === 'backup' || r.task_type === 'file_backup') {
             return <Text type="success">完成</Text>;
           }
           const succ = r.success_count || 0;
@@ -464,7 +548,7 @@ const TaskManager: React.FC = () => {
           if (r.error_message && r.error_message.includes('手动停止')) {
             return <Tag color="orange" style={{ margin: 0 }}>终止备份</Tag>;
           }
-          if (r.task_type === 'backup') {
+          if (r.task_type === 'backup' || r.task_type === 'file_backup') {
             return <Badge status="error" text="失败" />;
           }
           const succ = r.success_count || 0;
@@ -510,6 +594,21 @@ const TaskManager: React.FC = () => {
         return (size / (1024 * 1024)).toFixed(2) + ' MB';
       }
     }] : []),
+    ...(logTaskType === 'file_backup' ? [{ title: '快照目录', key: 'snapshotDir', width: 220, ellipsis: true,
+      render: (_: any, r: TaskExecutionLog) => r.backup_file
+        ? <Tooltip title={r.backup_file}><Text code style={{ fontSize: 11 }}>{r.backup_file}</Text></Tooltip>
+        : '-',
+    }, {
+      title: '传输大小', key: 'fileSize', width: 90,
+      render: (_: any, r: TaskExecutionLog) => {
+        if (r.status !== 'success') return '-';
+        if (r.file_size === undefined || r.file_size === null) return '-';
+        const size = r.file_size;
+        if (size < 1024) return size + ' B';
+        if (size < 1024 * 1024) return (size / 1024).toFixed(2) + ' KB';
+        return (size / (1024 * 1024)).toFixed(2) + ' MB';
+      }
+    }] : []),
     { title: '开始时间', dataIndex: 'started_at', key: 'started', width: 140, responsive: ['sm'] as any },
     { title: '完成时间', dataIndex: 'finished_at', key: 'finished', width: 140, responsive: ['md'] as any },
   ];
@@ -528,7 +627,9 @@ const TaskManager: React.FC = () => {
           {!loading && tasks.map(r => {
             const renderType = () => r.task_type === 'backup'
               ? <Tag icon={<DatabaseOutlined />} color="green">备份</Tag>
-              : <Tag icon={<SyncOutlined />} color="blue">同步</Tag>;
+              : r.task_type === 'file_backup'
+                ? <Tag icon={<FolderOpenOutlined />} color="orange">文件备份</Tag>
+                : <Tag icon={<SyncOutlined />} color="blue">同步</Tag>;
             const renderSchedule = () => {
               if (r.type === 'interval') return `每 ${r.interval_value} ${r.interval_unit === 'days' ? '天' : r.interval_unit === 'hours' ? '小时' : '分钟'}`;
               if (r.type === 'daily') return `每天 ${r.scheduled_time}`;
@@ -551,6 +652,7 @@ const TaskManager: React.FC = () => {
               >
                 <div style={{ padding: '4px 0', fontSize: 13, display: 'flex', flexDirection: 'column', gap: 4 }}>
                   <div><Text type="secondary">调度方式:</Text> <Text strong>{renderSchedule()}</Text></div>
+                  <div><Text type="secondary">执行顺序:</Text> <Text strong>{r.sort_order || 0}</Text> <Text type="secondary" style={{ fontSize: 11 }}>（数字小的先执行）</Text></div>
                   <div><Text type="secondary">上次执行:</Text> {r.last_run_at || '-'}</div>
                   <div><Text type="secondary">下次执行:</Text> {r.next_run_at ? <Text type="warning">{r.next_run_at}</Text> : '-'}</div>
                 </div>
@@ -586,12 +688,23 @@ const TaskManager: React.FC = () => {
           <Form.Item label="任务名称" name="name" rules={[{ required: true, message: '请输入任务名称' }]}>
             <Input placeholder="例如：每日同步教师数据" />
           </Form.Item>
-          <Form.Item label="任务类型" name="task_type" rules={[{ required: true }]}>
-            <Select options={[
-              { value: 'sync', label: <><SyncOutlined /> 数据同步</> },
-              { value: 'backup', label: <><DatabaseOutlined /> 数据库备份</> },
-            ]} />
-          </Form.Item>
+          <Row gutter={8}>
+            <Col xs={24} sm={12}>
+              <Form.Item label="执行顺序" name="sort_order" initialValue={0}
+                tooltip="同一时刻到点的任务会排队串行执行，数字小的先执行；数字相同按创建时间先后">
+                <InputNumber min={0} precision={0} style={{ width: '100%' }} />
+              </Form.Item>
+            </Col>
+            <Col xs={24} sm={12}>
+              <Form.Item label="任务类型" name="task_type" rules={[{ required: true }]}>
+                <Select options={[
+                  { value: 'sync', label: <><SyncOutlined /> 数据同步</> },
+                  { value: 'backup', label: <><DatabaseOutlined /> 数据库备份</> },
+                  { value: 'file_backup', label: <><FolderOpenOutlined /> 文件备份</> },
+                ]} />
+              </Form.Item>
+            </Col>
+          </Row>
           {/* 备份配置字段 */}
           <Form.Item noStyle shouldUpdate={(prev, cur) => prev.task_type !== cur.task_type}>
             {({ getFieldValue }) => {
@@ -605,14 +718,59 @@ const TaskManager: React.FC = () => {
                         options={backupConfigs.map(c => ({ value: c.id, label: c.name }))}
                         showSearch />
                     </Form.Item>
-                  
+
                   </div>
-                  <div style={{ display: taskType !== 'backup' ? 'block' : 'none' }}>
-                    <Form.Item label="同步配置（可多选）" name="sync_config_ids"
-                      rules={[{ required: taskType !== 'backup', message: '请选择至少一个同步配置' }]}>
-                      <Select mode="multiple" placeholder="选择要执行的导入配置（可多选）"
-                        options={configs.map(c => ({ value: Number(c.id), label: `${c.name} (${c.target_table})` }))}
+                  <div style={{ display: taskType === 'file_backup' ? 'block' : 'none' }}>
+                    <Form.Item label="文件备份配置" name="file_backup_config_id"
+                      rules={[{ required: taskType === 'file_backup', message: '请选择文件备份配置' }]}>
+                      <Select placeholder="选择文件备份配置"
+                        options={fileBackupConfigs.map(c => ({ value: c.id, label: c.name }))}
                         showSearch />
+                    </Form.Item>
+                  </div>
+                  <div style={{ display: (taskType === 'sync' || !taskType) ? 'block' : 'none' }}>
+                    <Form.Item label="同步配置（可多选）" name="sync_config_ids"
+                      rules={[{ required: taskType === 'sync' || !taskType, message: '请选择至少一个同步配置' }]}>
+                      <Select mode="multiple" placeholder="选择要执行的导入配置（可多选）"
+                        options={configs.map(c => ({ value: Number(c.id), label: `${c.name} (${c.target_database ? c.target_database + '.' : ''}${c.target_table})` }))}
+                        showSearch />
+                    </Form.Item>
+                    {/* 配置执行顺序面板：按当前选择顺序排列，可上下调整 */}
+                    <Form.Item noStyle shouldUpdate={(prev, cur) => prev.sync_config_ids !== cur.sync_config_ids}>
+                      {({ getFieldValue }) => {
+                        const ids: number[] = getFieldValue('sync_config_ids') || [];
+                        if (ids.length < 2) return null;
+                        return (
+                          <div style={{ marginBottom: 16, border: '1px solid #f0f0f0', borderRadius: 6, padding: '8px 12px', background: '#fafafa' }}>
+                            <div style={{ fontSize: 12, color: '#888', marginBottom: 4 }}>执行顺序（从上到下依次执行，可用 ↑↓ 调整）</div>
+                            {ids.map((id, idx) => {
+                              const c = configs.find(x => x.id === id);
+                              return (
+                                <div key={id} style={{
+                                  display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                                  padding: '4px 0', borderBottom: idx < ids.length - 1 ? '1px dashed #e8e8e8' : 'none',
+                                }}>
+                                  <Space size={6}>
+                                    <Tag color="orange" style={{ margin: 0 }}>{idx + 1}</Tag>
+                                    <Text>{c ? c.name : `配置#${id}`}</Text>
+                                    {c && (
+                                      <Text type="secondary" style={{ fontSize: 12 }}>
+                                        {c.target_database ? `${c.target_database}.${c.target_table}` : c.target_table}
+                                      </Text>
+                                    )}
+                                  </Space>
+                                  <Space size={4}>
+                                    <Button size="small" icon={<UpOutlined />} disabled={idx === 0}
+                                      onClick={() => moveConfig(ids, idx, -1)} />
+                                    <Button size="small" icon={<DownOutlined />} disabled={idx === ids.length - 1}
+                                      onClick={() => moveConfig(ids, idx, 1)} />
+                                  </Space>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        );
+                      }}
                     </Form.Item>
                   </div>
                 </>
@@ -726,18 +884,21 @@ const TaskManager: React.FC = () => {
                     const done = r.success_count || 0;
                     const total = r.total_records || 0;
                     const isBackup = r.task_type === 'backup';
-                    const label = isBackup ? `表 ${done}/${total} (${pct}%)` : (total > 0 ? `${done} / ${total}` : `${pct}%`);
+                    const isFileBackup = r.task_type === 'file_backup';
+                    const label = isBackup ? `表 ${done}/${total} (${pct}%)`
+                      : isFileBackup ? `文件 ${done} (${pct}%)`
+                      : (total > 0 ? `${done} / ${total}` : `${pct}%`);
                     return (
                       <Space size="small">
                         <Progress percent={pct} size="small" status="active" style={{ width: 100 }} format={() => label} />
                         <Button type="text" size="small" danger icon={<CloseCircleOutlined />}
                           loading={stoppingId === (r.sync_config_id || 0)}
-                          onClick={() => handleStopBackup(r.sync_config_id || 0)} />
+                          onClick={() => isFileBackup ? handleStopFileBackup(r.sync_config_id || 0) : handleStopBackup(r.sync_config_id || 0)} />
                       </Space>
                     );
                   }
                   if (r.status === 'success') {
-                    if (r.task_type === 'backup') return <Text type="success">完成</Text>;
+                    if (r.task_type === 'backup' || r.task_type === 'file_backup') return <Text type="success">完成</Text>;
                     const succ = r.success_count || 0;
                     const fail = r.error_count || 0;
                     if (succ > 0 || fail > 0) {
@@ -749,7 +910,7 @@ const TaskManager: React.FC = () => {
                     if (r.error_message && r.error_message.includes('手动停止')) {
                       return <Tag color="orange" style={{ margin: 0 }}>终止备份</Tag>;
                     }
-                    if (r.task_type === 'backup') return <Badge status="error" text="失败" />;
+                    if (r.task_type === 'backup' || r.task_type === 'file_backup') return <Badge status="error" text="失败" />;
                     const succ = r.success_count || 0;
                     const fail = r.error_count || 0;
                     if (succ > 0 || fail > 0) {
@@ -826,9 +987,15 @@ const TaskManager: React.FC = () => {
                         )}
                       </div>
                       {r.task_type === 'backup' && renderBackupFile()}
-                      {r.task_type === 'backup' && r.status === 'success' && r.file_size !== undefined && r.file_size !== null ? (
+                      {r.task_type === 'file_backup' && r.backup_file && (
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 4, flexWrap: 'wrap' }}>
+                          <Text type="secondary">快照目录:</Text>
+                          <Tooltip title={r.backup_file}><Text code style={{ fontSize: 11 }}>{r.backup_file}</Text></Tooltip>
+                        </div>
+                      )}
+                      {(r.task_type === 'backup' || r.task_type === 'file_backup') && r.status === 'success' && r.file_size !== undefined && r.file_size !== null ? (
                         <div>
-                          <Text type="secondary">文件大小:</Text> {
+                          <Text type="secondary">{r.task_type === 'backup' ? '文件大小:' : '传输大小:'}</Text> {
                             r.file_size < 1024
                               ? r.file_size + ' B'
                               : r.file_size < 1024 * 1024
@@ -857,7 +1024,7 @@ const TaskManager: React.FC = () => {
               )}
             </div>
             <Table dataSource={execLogs} columns={logColumns} rowKey="id"
-              loading={logLoading} pagination={false} size="small"
+              loading={logLoading} pagination={{ pageSize: 50, showSizeChanger: false }} size="small"
               scroll={{ x: 'max-content' }}
               rowSelection={{
                 selectedRowKeys: logSelectedKeys,

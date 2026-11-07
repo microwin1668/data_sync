@@ -148,7 +148,10 @@ export async function previewSyncData(syncConfigId: number) {
     // 目标表列信息
     const pool = new Pool({
       host: pgSource.host, port: parseInt(pgSource.port), user: pgSource.user,
-      password: pgSource.password, database: pgSource.database, connectionTimeoutMillis: 5000,
+      password: pgSource.password,
+      // 配置指定了目标库则覆盖数据源默认库（同一服务器多库同步）
+      database: (syncCfg.target_database || '').trim() || pgSource.database,
+      connectionTimeoutMillis: 5000,
     });
     let client;
     const targetColumns: any[] = [];
@@ -222,7 +225,9 @@ export async function executeSyncImportStream(
 
     const pool = new Pool({
       host: pgSource.host, port: parseInt(pgSource.port), user: pgSource.user,
-      password: pgSource.password, database: pgSource.database,
+      password: pgSource.password,
+      // 配置指定了目标库则覆盖数据源默认库（同一服务器多库同步）
+      database: (syncCfg.target_database || '').trim() || pgSource.database,
     });
 
     let totalSuccess = 0, totalErrors = 0;
@@ -324,7 +329,9 @@ export async function executeSyncImport(syncConfigId: number) {
 
     const pool = new Pool({
       host: pgSource.host, port: parseInt(pgSource.port), user: pgSource.user,
-      password: pgSource.password, database: pgSource.database,
+      password: pgSource.password,
+      // 配置指定了目标库则覆盖数据源默认库（同一服务器多库同步）
+      database: (syncCfg.target_database || '').trim() || pgSource.database,
     });
 
     let totalSuccess = 0, totalErrors = 0;

@@ -1,9 +1,11 @@
 import Router from '@koa/router';
+import multer from '@koa/multer';
 import fs from "fs";
 import path from "path";
 import { getLogFilePath, logFileExists } from "../utils/logUtils";
-import { getConfig, upsertTokenConfig, upsertDataApiUrl, updateAccessToken } from '../db/sqlite';
-import { listPgDatasources, createPgDatasource, updatePgDatasource, deletePgDatasource, listSyncTasks, getSyncTask, createSyncTask, updateSyncTask, deleteSyncTask, listTaskExecutionLogs, createTaskExecutionLog, updateTaskExecutionLog, deleteTaskExecutionLog, listBackupConfigs, listBackupConfigsNames, getBackupConfig, createBackupConfig, updateBackupConfig, deleteBackupConfig, listBackupLogs, getBackupLog, deleteBackupLogs } from '../db/sqlite';
+import { getConfig, upsertTokenConfig, upsertDataApiUrl, updateAccessToken, updateAuthPassword, getEmailNotifyConfig, upsertEmailNotifyConfig } from '../db/sqlite';
+import { sendNotifyMail } from '../services/notifyService';
+import { listPgDatasources, createPgDatasource, updatePgDatasource, deletePgDatasource, listSyncTasks, getSyncTask, createSyncTask, updateSyncTask, deleteSyncTask, listTaskExecutionLogs, createTaskExecutionLog, updateTaskExecutionLog, deleteTaskExecutionLog, listBackupConfigs, listBackupConfigsNames, getBackupConfig, createBackupConfig, updateBackupConfig, deleteBackupConfig, listBackupLogs, getBackupLog, deleteBackupLogs, listFileBackupConfigs, listFileBackupConfigsNames, getFileBackupConfig, createFileBackupConfig, updateFileBackupConfig, deleteFileBackupConfig, listFileBackupLogs, deleteFileBackupLogs } from '../db/sqlite';
 import axios from 'axios';
 import { fetchAccessToken, fetchDataFromApi, QueryParams } from '../services/apiService';
 import {
@@ -17,9 +19,28 @@ import { listPgTables, listPgColumns, previewSyncData, executeSyncImport, execut
 import { executeExcelImport } from '../services/excelImportService';
 import { startScheduler, executeTaskSync } from '../services/schedulerService';
 import { startBackupScheduler, runBackupNow, checkPgDumpInstalled, installPgTools, getInstallProgress, resetInstallProgress, getBackupProgress, stopBackup, startBackupProgressMonitor, stopBackupProgressMonitor, listDumpTables, restoreBackup, getRestoreProgress, stopRestore } from '../services/backupService';
+import { checkRsyncInstalled, testSshConnection, runFileBackupNow, getFileBackupProgress, stopFileBackup, startFileBackupProgressMonitor, stopFileBackupProgressMonitor } from '../services/fileBackupService';
 import { exportConfig, importConfig, clearConfig } from '../db/sqlite';
 
 const router = new Router({ prefix: '/api' });
+const restoreUploadDir = path.resolve(process.cwd(), 'backups', 'restore-uploads');
+const restoreUpload = multer({
+  storage: multer.diskStorage({
+    destination: (_req, _file, cb) => {
+      fs.mkdirSync(restoreUploadDir, { recursive: true });
+      cb(null, restoreUploadDir);
+    },
+    filename: (_req, file, cb) => {
+      const ext = path.extname(file.originalname).toLowerCase();
+      const base = path.basename(file.originalname, ext).replace(/[^\w.-]+/g, '_').slice(0, 80) || 'restore';
+      cb(null, `${Date.now()}_${base}${ext}`);
+    },
+  }),
+  fileFilter: (_req, file, cb) => {
+    const ext = path.extname(file.originalname).toLowerCase();
+    cb(null, ext === '.dump' || ext === '.sql');
+  },
+});
 
 // 服务器时间
 router.get('/server/time', async (ctx) => {
@@ -93,6 +114,45 @@ router.post('/config/data-api', async (ctx) => {
   }
   await upsertDataApiUrl(data_api_url);
   ctx.body = { success: true, message: '数据 API 配置保存成功' };
+});
+
+// ========== 邮件告警配置 ==========
+
+router.get('/notify/config', async (ctx) => {
+  const cfg = await getEmailNotifyConfig();
+  ctx.body = { success: true, data: cfg };
+});
+
+router.post('/notify/config', async (ctx) => {
+  const body = ctx.request.body as any;
+  await upsertEmailNotifyConfig({
+    smtp_host: body.smtp_host || '',
+    smtp_port: body.smtp_port,
+    smtp_secure: body.smtp_secure,
+    smtp_user: body.smtp_user || '',
+    smtp_password: body.smtp_password || '',
+    from_email: body.from_email || '',
+    recipients: body.recipients || '',
+    notify_backup_fail: body.notify_backup_fail,
+    notify_sync_fail: body.notify_sync_fail,
+    notify_crash: body.notify_crash,
+    throttle_minutes: body.throttle_minutes,
+    crash_throttle_minutes: body.crash_throttle_minutes,
+  });
+  ctx.body = { success: true, message: '邮件告警配置已保存' };
+});
+
+// 发送测试邮件(不受开关和节流限制,用于验证 SMTP 配置)
+router.post('/notify/test', async (ctx) => {
+  try {
+    await sendNotifyMail(
+      '【数据同步】测试邮件',
+      '<div style="font-family:-apple-system,\'PingFang SC\',\'Microsoft YaHei\',sans-serif;"><h2 style="color:#389e0d;margin:0 0 12px;">邮件告警配置成功</h2><p style="color:#333;">这是一封测试邮件,说明 SMTP 配置与收件人均可正常工作。</p><p style="color:#888;font-size:12px;">来自 data-sync 数据同步系统</p></div>'
+    );
+    ctx.body = { success: true, message: '测试邮件已发送,请到收件箱(或垃圾箱)查收' };
+  } catch (err: any) {
+    ctx.body = { success: false, message: '发送失败: ' + (err.message || '未知错误') };
+  }
 });
 
 // ========== PG 多数据源 CRUD ==========
@@ -322,6 +382,7 @@ router.post('/sync-configs', async (ctx) => {
     name: body.name || '',
     remote_table_id: body.remote_table_id || 0,
     pg_source_id: body.pg_source_id || 0,
+    target_database: body.target_database || '',
     target_table: body.target_table || '',
     target_pk: body.target_pk || '',
     import_settings: body.import_settings || '[]',
@@ -339,6 +400,7 @@ router.put('/sync-configs/:id', async (ctx) => {
     name: body.name || '',
     remote_table_id: body.remote_table_id || 0,
     pg_source_id: body.pg_source_id || 0,
+    target_database: body.target_database || '',
     target_table: body.target_table || '',
     target_pk: body.target_pk || '',
     import_settings: body.import_settings || '[]',
@@ -429,6 +491,10 @@ router.post('/sync-tasks', async (ctx) => {
     ctx.body = { success: false, message: '备份任务需要选择备份配置' };
     return;
   }
+  if (body.task_type === 'file_backup' && !body.file_backup_config_id) {
+    ctx.body = { success: false, message: '文件备份任务需要选择文件备份配置' };
+    return;
+  }
   const id = await createSyncTask({
     name: body.name,
     sync_config_id: ids[0] || 0,
@@ -440,8 +506,10 @@ router.post('/sync-tasks', async (ctx) => {
     scheduled_time: body.scheduled_time || '',
     scheduled_days: body.scheduled_days || '',
     enabled: body.enabled !== undefined ? body.enabled : 1,
+    sort_order: body.sort_order || 0,
     task_type: body.task_type || 'sync',
     backup_config_id: body.backup_config_id || 0,
+    file_backup_config_id: body.file_backup_config_id || 0,
     backup_dir: body.backup_dir || '',
     keep_days: body.keep_days || 7,
   });
@@ -467,8 +535,10 @@ router.put('/sync-tasks/:id', async (ctx) => {
     scheduled_time: body.scheduled_time !== undefined ? body.scheduled_time : existing.scheduled_time,
     scheduled_days: body.scheduled_days !== undefined ? body.scheduled_days : existing.scheduled_days,
     enabled: body.enabled !== undefined ? body.enabled : existing.enabled,
+    sort_order: body.sort_order !== undefined ? body.sort_order : (existing.sort_order || 0),
     task_type: body.task_type || existing.task_type || 'sync',
     backup_config_id: body.backup_config_id !== undefined ? body.backup_config_id : (existing.backup_config_id || 0),
+    file_backup_config_id: body.file_backup_config_id !== undefined ? body.file_backup_config_id : (existing.file_backup_config_id || 0),
     backup_dir: body.backup_dir !== undefined ? body.backup_dir : (existing.backup_dir || ''),
     keep_days: body.keep_days !== undefined ? body.keep_days : (existing.keep_days || 7),
   });
@@ -507,6 +577,27 @@ router.post('/sync-tasks/:id/run', async (ctx) => {
       // 启动进度监视器，自动更新执行日志
       startBackupProgressMonitor(task.backup_config_id, logId);
       ctx.body = { success: true, message: '备份已开始执行' };
+    } else if (task.task_type === 'file_backup') {
+      // 手动执行文件备份任务 - 创建执行日志并异步运行
+      const fileConfig = await getFileBackupConfig(task.file_backup_config_id);
+      if (!fileConfig) {
+        ctx.body = { success: false, message: '文件备份配置不存在' };
+        return;
+      }
+      const logId = await createTaskExecutionLog({
+        task_id: task.id,
+        task_name: task.name,
+        sync_config_id: task.file_backup_config_id || 0,
+        sync_config_name: fileConfig.name || '文件备份:' + task.file_backup_config_id,
+        target_table: `${fileConfig.ssh_user}@${fileConfig.ssh_host}:${fileConfig.remote_dir}`,
+        task_type: 'file_backup',
+        status: 'running',
+      });
+      // 异步执行文件备份
+      runFileBackupNow(task.file_backup_config_id).catch(err => console.error('[Manual] 文件备份异常:', err));
+      // 启动进度监视器，自动更新执行日志
+      startFileBackupProgressMonitor(task.file_backup_config_id, logId);
+      ctx.body = { success: true, message: '文件备份已开始执行' };
     } else {
       const result = await executeTaskSync(task);
       ctx.body = { success: true, data: result, message: result.message };
@@ -681,6 +772,128 @@ router.get('/backup-configs/:id/logs', async (ctx) => {
   ctx.body = { success: true, data: logs };
 });
 
+// ========== 文件备份配置管理(远程目录每日快照) ==========
+
+router.get('/file-backup-configs', async (ctx) => {
+  const configs = await listFileBackupConfigs();
+  ctx.body = { success: true, data: configs };
+});
+
+router.get('/file-backup-configs/:id', async (ctx) => {
+  const cfg = await getFileBackupConfig(parseInt(ctx.params.id));
+  if (!cfg) { ctx.body = { success: false, message: '配置不存在' }; return; }
+  ctx.body = { success: true, data: cfg };
+});
+
+router.post('/file-backup-configs', async (ctx) => {
+  const body = ctx.request.body as any;
+  if (!body.name || !body.ssh_host || !body.ssh_user || !body.remote_dir || !body.local_dir) {
+    ctx.body = { success: false, message: '名称、主机、用户名、远端目录和本地目录不能为空' };
+    return;
+  }
+  const id = await createFileBackupConfig({
+    name: body.name, ssh_host: body.ssh_host, ssh_port: body.ssh_port || '22',
+    ssh_user: body.ssh_user, auth_type: body.auth_type || 'key',
+    ssh_key_path: body.ssh_key_path || '', ssh_password: body.ssh_password || '',
+    remote_dir: body.remote_dir, local_dir: body.local_dir,
+    exclude_patterns: typeof body.exclude_patterns === 'string' ? body.exclude_patterns : JSON.stringify(body.exclude_patterns || []),
+    keep_days: body.keep_days || 30,
+    enabled: body.enabled !== undefined ? body.enabled : 1,
+  });
+  ctx.body = { success: true, data: { id }, message: '创建成功' };
+});
+
+router.put('/file-backup-configs/:id', async (ctx) => {
+  const body = ctx.request.body as any;
+  const id = parseInt(ctx.params.id);
+  const existing = await getFileBackupConfig(id);
+  if (!existing) { ctx.body = { success: false, message: '配置不存在' }; return; }
+  await updateFileBackupConfig(id, {
+    name: body.name || existing.name,
+    ssh_host: body.ssh_host || existing.ssh_host,
+    ssh_port: body.ssh_port !== undefined ? body.ssh_port : existing.ssh_port,
+    ssh_user: body.ssh_user || existing.ssh_user,
+    auth_type: body.auth_type || existing.auth_type,
+    ssh_key_path: body.ssh_key_path !== undefined ? body.ssh_key_path : existing.ssh_key_path,
+    ssh_password: body.ssh_password !== undefined ? body.ssh_password : existing.ssh_password,
+    remote_dir: body.remote_dir || existing.remote_dir,
+    local_dir: body.local_dir || existing.local_dir,
+    exclude_patterns: body.exclude_patterns !== undefined
+      ? (typeof body.exclude_patterns === 'string' ? body.exclude_patterns : JSON.stringify(body.exclude_patterns || []))
+      : existing.exclude_patterns,
+    keep_days: body.keep_days !== undefined ? body.keep_days : existing.keep_days,
+    enabled: body.enabled !== undefined ? body.enabled : existing.enabled,
+  });
+  ctx.body = { success: true, message: '更新成功' };
+});
+
+router.delete('/file-backup-configs/:id', async (ctx) => {
+  await deleteFileBackupConfig(parseInt(ctx.params.id));
+  ctx.body = { success: true, message: '已删除' };
+});
+
+// 立即执行文件备份
+router.post('/file-backup-configs/:id/run', async (ctx) => {
+  const result = await runFileBackupNow(parseInt(ctx.params.id));
+  ctx.body = result;
+});
+
+// 停止文件备份
+router.post('/file-backup-configs/:id/stop', async (ctx) => {
+  const result = stopFileBackup(parseInt(ctx.params.id));
+  ctx.body = result;
+});
+
+// 获取文件备份进度
+router.get('/file-backup-configs/:id/progress', async (ctx) => {
+  const progress = getFileBackupProgress(parseInt(ctx.params.id));
+  if (progress) {
+    ctx.body = { success: true, data: progress };
+  } else {
+    ctx.body = { success: false, message: '没有正在执行的文件备份或进度已过期' };
+  }
+});
+
+// 文件备份日志
+router.get('/file-backup-configs/:id/logs', async (ctx) => {
+  const logs = await listFileBackupLogs(parseInt(ctx.params.id));
+  ctx.body = { success: true, data: logs };
+});
+
+// 批量删除文件备份日志
+router.delete('/file-backup-logs', async (ctx) => {
+  const { ids } = ctx.request.body as any;
+  if (!ids || !Array.isArray(ids) || ids.length === 0) {
+    ctx.body = { success: false, message: '请选择要删除的日志' };
+    return;
+  }
+  await deleteFileBackupLogs(ids.map((i: any) => Number(i)));
+  ctx.body = { success: true, message: `已删除 ${ids.length} 条日志` };
+});
+
+// 文件备份配置名称列表（供任务管理下拉选择）
+router.get('/config/file-backup-configs-names', async (ctx) => {
+  const configs = await listFileBackupConfigsNames();
+  ctx.body = { success: true, data: configs };
+});
+
+// 检查 rsync / sshpass 是否可用
+router.get('/file-backup/check-rsync', async (ctx) => {
+  const result = checkRsyncInstalled();
+  ctx.body = { success: true, data: result };
+});
+
+// 测试 SSH 连接（使用表单当前填写的连接信息，无需先保存）
+router.post('/file-backup/test-connection', async (ctx) => {
+  const body = ctx.request.body as any;
+  const result = await testSshConnection({
+    ssh_host: body.ssh_host || '', ssh_port: body.ssh_port || '22',
+    ssh_user: body.ssh_user || '', auth_type: body.auth_type || 'key',
+    ssh_key_path: body.ssh_key_path || '', ssh_password: body.ssh_password || '',
+  });
+  ctx.body = result;
+});
+
 // 获取 PG 数据源的所有数据库列表
 router.get('/config/pg-sources/:id/databases', async (ctx) => {
   const id = parseInt(ctx.params.id);
@@ -753,31 +966,41 @@ router.post('/config/pg-sources/:id/databases', async (ctx) => {
 // 获取备份文件中的表结构列表
 router.get('/backup-logs/:id/tables', async (ctx) => {
   const id = parseInt(ctx.params.id);
+  const selectedFile = ctx.query.selected_file as string | undefined;
+
   const log = await getBackupLog(id);
   if (!log) {
     ctx.body = { success: false, message: '备份日志不存在' };
-    return;
-  }
-  if (!log.backup_file) {
-    ctx.body = { success: false, message: '该备份日志没有关联的备份文件' };
     return;
   }
 
   const config = await getBackupConfig(log.config_id);
   const backupDir = config?.backup_dir || path.resolve(process.cwd(), 'backups');
 
-  // 查找 dump 文件
-  const files = log.backup_file.split(',').map(f => f.trim()).filter(Boolean);
-  const dumpFile = files.find(f => f.endsWith('.dump'));
-  
-  if (!dumpFile) {
-    ctx.body = { success: false, message: '该备份为 SQL 格式，不支持获取表列表进行选择性恢复。' };
-    return;
+  let filePath = '';
+  if (selectedFile) {
+    if (path.isAbsolute(selectedFile)) {
+      filePath = selectedFile;
+    } else {
+      filePath = path.join(backupDir, selectedFile);
+    }
+  } else {
+    if (!log.backup_file) {
+      ctx.body = { success: false, message: '该备份日志没有关联的备份文件' };
+      return;
+    }
+    const files = log.backup_file.split(',').map(f => f.trim()).filter(Boolean);
+    const dumpFile = files.find(f => f.endsWith('.dump'));
+
+    if (!dumpFile) {
+      ctx.body = { success: false, message: '该备份为 SQL 格式，不支持获取表列表进行选择性恢复。' };
+      return;
+    }
+    filePath = path.join(backupDir, dumpFile);
   }
 
-  const filePath = path.join(backupDir, dumpFile);
   if (!fs.existsSync(filePath)) {
-    ctx.body = { success: false, message: '备份文件不存在: ' + dumpFile };
+    ctx.body = { success: false, message: '备份文件不存在: ' + (selectedFile || filePath) };
     return;
   }
 
@@ -787,6 +1010,35 @@ router.get('/backup-logs/:id/tables', async (ctx) => {
   } catch (err: any) {
     ctx.body = { success: false, message: '获取表列表失败: ' + err.message };
   }
+});
+
+// 上传本地备份文件供恢复使用
+router.post('/backup-logs/:id/restore-file', restoreUpload.single('file'), async (ctx) => {
+  const id = parseInt(ctx.params.id);
+  const log = await getBackupLog(id);
+  if (!log) {
+    if (ctx.file?.path) {
+      try { fs.unlinkSync(ctx.file.path); } catch {}
+    }
+    ctx.body = { success: false, message: '备份日志不存在' };
+    return;
+  }
+
+  const file = ctx.file;
+  if (!file) {
+    ctx.body = { success: false, message: '请选择 .dump 或 .sql 备份文件' };
+    return;
+  }
+
+  ctx.body = {
+    success: true,
+    data: {
+      path: file.path,
+      filename: file.originalname,
+      size: file.size,
+    },
+    message: '本地备份文件上传成功',
+  };
 });
 
 // 恢复备份（异步启动）
@@ -800,6 +1052,7 @@ router.post('/backup-logs/:id/restore', async (ctx) => {
     overwrite: boolean; 
     disable_triggers?: boolean;
     temp_password?: string;
+    selected_file?: string;
   };
   
   const log = await getBackupLog(id);
@@ -807,35 +1060,44 @@ router.post('/backup-logs/:id/restore', async (ctx) => {
     ctx.body = { success: false, message: '备份日志不存在' };
     return;
   }
-  if (!log.backup_file) {
-    ctx.body = { success: false, message: '该备份日志没有关联 of 备份文件' };
-    return;
-  }
 
   const config = await getBackupConfig(log.config_id);
   const backupDir = config?.backup_dir || path.resolve(process.cwd(), 'backups');
 
-  const files = log.backup_file.split(',').map(f => f.trim()).filter(Boolean);
-  let selectedFile = files[0];
-  
-  // 优先选择 dump 文件进行恢复（如果指定了表或 Schema，则必须使用 dump 格式）
-  const dumpFile = files.find(f => f.endsWith('.dump'));
-  const sqlFile = files.find(f => f.endsWith('.sql'));
-  
-  if ((body.tables && body.tables.length > 0) || body.schema) {
-    if (dumpFile) {
-      selectedFile = dumpFile;
+  let filePath = '';
+  if (body.selected_file) {
+    if (path.isAbsolute(body.selected_file)) {
+      filePath = body.selected_file;
     } else {
-      ctx.body = { success: false, message: '当前备份仅包含 SQL 格式，不支持恢复指定表或 Schema。请不要选择指定表/Schema，或使用 DUMP 格式备份进行恢复。' };
-      return;
+      filePath = path.join(backupDir, body.selected_file);
     }
   } else {
-    selectedFile = dumpFile || sqlFile || files[0];
+    if (!log.backup_file) {
+      ctx.body = { success: false, message: '该备份日志没有关联的备份文件' };
+      return;
+    }
+    const files = log.backup_file.split(',').map(f => f.trim()).filter(Boolean);
+    let selectedFile = files[0];
+
+    // 优先选择 dump 文件进行恢复（如果指定了表或 Schema，则必须使用 dump 格式）
+    const dumpFile = files.find(f => f.endsWith('.dump'));
+    const sqlFile = files.find(f => f.endsWith('.sql'));
+
+    if ((body.tables && body.tables.length > 0) || body.schema) {
+      if (dumpFile) {
+        selectedFile = dumpFile;
+      } else {
+        ctx.body = { success: false, message: '当前备份仅包含 SQL 格式，不支持恢复指定表或 Schema。请不要选择指定表/Schema，或使用 DUMP 格式备份进行恢复。' };
+        return;
+      }
+    } else {
+      selectedFile = dumpFile || sqlFile || files[0];
+    }
+    filePath = path.join(backupDir, selectedFile);
   }
 
-  const filePath = path.join(backupDir, selectedFile);
   if (!fs.existsSync(filePath)) {
-    ctx.body = { success: false, message: '备份文件不存在: ' + selectedFile };
+    ctx.body = { success: false, message: '备份文件不存在: ' + (body.selected_file || filePath) };
     return;
   }
 
@@ -972,7 +1234,6 @@ router.post('/auth/login', async (ctx) => {
 // 修改密码
 router.post('/auth/change-password', async (ctx) => {
   const body = ctx.request.body as any;
-  const { getConfig, getConfigValue } = require('../db/sqlite');
   const config = await getConfig();
   const storedPassword = config?.auth_password || 'admin';
   if (body.oldPassword !== storedPassword) {
@@ -983,11 +1244,7 @@ router.post('/auth/change-password', async (ctx) => {
     ctx.body = { success: false, message: '新密码至少 3 个字符' };
     return;
   }
-  // 更新密码
-  const crypto = require('crypto');
-  const db = (await require('../db/sqlite').initDb());
-  require('../db/sqlite').db?.run("UPDATE configs SET auth_password=?, updated_at=datetime('now','localtime') WHERE id=?", [body.newPassword, config.id]);
-  require('../db/sqlite').saveDb?.();
+  await updateAuthPassword(body.newPassword);
   ctx.body = { success: true, message: '密码修改成功' };
 });
 

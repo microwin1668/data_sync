@@ -7,19 +7,25 @@
     "start": "tsx src/index.ts"
   },
   "dependencies": {
+    "@koa/multer": "^4.0.0",
     "@koa/router": "^12.0.1",
     "axios": "^1.7.2",
+    "better-sqlite3": "^11.10.0",
     "koa": "^2.15.3",
     "koa-bodyparser": "^4.4.1",
     "koa-cors": "^0.0.16",
-    "pg": "^8.21.0",
-    "sql.js": "^1.10.3"
+    "multer": "^2.2.0",
+    "nodemailer": "^6.9.14",
+    "pg": "^8.21.0"
   },
   "devDependencies": {
+    "@types/better-sqlite3": "^9.6.0",
     "@types/koa": "^2.15.0",
+    "@types/koa__multer": "^2.0.8",
     "@types/koa__router": "^12.0.4",
     "@types/koa-bodyparser": "^4.3.12",
-    "@types/sql.js": "^1.4.9",
+    "@types/multer": "^2.1.0",
+    "@types/nodemailer": "^6.4.15",
     "tsx": "^4.16.2",
     "typescript": "^5.5.3"
   }
