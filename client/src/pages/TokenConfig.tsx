@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import {
-  Card, Form, Input, Button, Space, message, Alert, Typography, Tabs, Table, Modal, Tag, Popconfirm, Tooltip, Checkbox, Row, Col, Spin, Select, Switch, InputNumber, AutoComplete
+  Card, Form, Input, Button, Space, message, Alert, Typography, Tabs, Table, Modal, Tag, Popconfirm, Tooltip, Checkbox, Row, Col, Spin, Select, Switch, InputNumber, AutoComplete, Badge
 } from 'antd';
 import {
   KeyOutlined, SaveOutlined, SendOutlined, DatabaseOutlined,
@@ -14,6 +14,7 @@ import {
   fetchAccessToken, exportConfig, importConfig, clearConfig,
   listTokenConfigs, createTokenConfig, updateTokenConfig, deleteTokenConfig,
   listPgSources, createPgSource, updatePgSource, deletePgSource, testPgSourceConnection,
+  listRemoteTables, listSyncConfigs, listSyncTasks, listBackupConfigs, listFileBackupConfigs,
   getEmailNotifyConfig, saveEmailNotifyConfig, sendNotifyTestEmail,
 } from '../api';
 import type { PgDatasource, TokenConfigInfo } from '../api';
@@ -144,7 +145,7 @@ const TokenConfigTab: React.FC = () => {
 
       <Modal title={editingId ? '编辑 Token 配置' : '新增 Token 配置'}
         open={modalOpen} onOk={handleSave} onCancel={() => setModalOpen(false)}
-        okText="保存" cancelText="取消" confirmLoading={saving} width={560} maskClosable={false} destroyOnClose>
+        okText="保存" cancelText="取消" confirmLoading={saving} width={560} maskClosable={false} destroyOnHidden>
         <Form form={form} layout="vertical">
           <Form.Item label="配置名称" name="name" rules={[{ required: true, message: '请输入配置名称' }]}>
             <Input placeholder="例如：教务系统、学工系统" />
@@ -438,16 +439,19 @@ const PgSourcesTab: React.FC = () => {
   );
 };
 
-// ==================== 配置导入/导出 Tab ====================
+// ==================== 配置导入/导出 Tab(带校验) ====================
 
 const categories = [
-  { key: 'token', label: 'Token 配置' },
-  { key: 'pg_sources', label: 'PG 数据源' },
-  { key: 'remote_tables', label: '远程数据表' },
-  { key: 'sync_configs', label: '数据导入配置' },
-  { key: 'sync_tasks', label: '定时任务' },
-  { key: 'backup_configs', label: '数据库备份配置' },
+  { key: 'token', label: 'Token 配置', fileKey: 'token_configs' },
+  { key: 'pg_sources', label: 'PG 数据源', fileKey: 'pg_sources' },
+  { key: 'remote_tables', label: '远程数据表', fileKey: 'remote_tables' },
+  { key: 'sync_configs', label: '数据导入配置', fileKey: 'sync_configs' },
+  { key: 'sync_tasks', label: '定时任务', fileKey: 'sync_tasks' },
+  { key: 'backup_configs', label: '数据库备份配置', fileKey: 'backup_configs' },
+  { key: 'file_backup_configs', label: '文件备份配置', fileKey: 'file_backup_configs' },
 ];
+
+interface ValidationItem { status: 'ok' | 'warn' | 'error'; label: string; detail: string }
 
 const ExportImportTab: React.FC = () => {
   const [selectedExport, setSelectedExport] = useState<string[]>([]);
@@ -457,67 +461,246 @@ const ExportImportTab: React.FC = () => {
   const [clearing, setClearing] = useState(false);
   const [exportData, setExportData] = useState<string>('');
   const [jsonViewMode, setJsonViewMode] = useState(false);
+  const [counts, setCounts] = useState<Record<string, number>>({});
+  const [currentIds, setCurrentIds] = useState<Record<string, number[]>>({});
+  const [validating, setValidating] = useState(false);
+  const [validation, setValidation] = useState<{ items: ValidationItem[]; total: number } | null>(null);
+  const [validatedSnapshot, setValidatedSnapshot] = useState('');
+
+  const refreshCounts = async () => {
+    const r = await Promise.allSettled([
+      listTokenConfigs(), listPgSources(), listRemoteTables(),
+      listSyncConfigs(), listSyncTasks(), listBackupConfigs(), listFileBackupConfigs(),
+    ]);
+    const get = (i: number): any[] => r[i].status === 'fulfilled' ? ((r[i] as any).value?.data || []) : [];
+    const tokenList = get(0), pgList = get(1), rtList = get(2), scList = get(3), stList = get(4), bcList = get(5), fbList = get(6);
+    setCounts({
+      token: tokenList.length, pg_sources: pgList.length, remote_tables: rtList.length,
+      sync_configs: scList.length, sync_tasks: stList.length, backup_configs: bcList.length,
+      file_backup_configs: fbList.length,
+    });
+    setCurrentIds({
+      token: tokenList.map((t: any) => t.id), pg_sources: pgList.map((t: any) => t.id),
+      remote_tables: rtList.map((t: any) => t.id), sync_configs: scList.map((t: any) => t.id),
+      sync_tasks: stList.map((t: any) => t.id), backup_configs: bcList.map((t: any) => t.id),
+      file_backup_configs: fbList.map((t: any) => t.id),
+    });
+  };
+
+  useEffect(() => { refreshCounts(); }, []);
 
   const parsedJson = useMemo(() => {
-    try {
-      return JSON.parse(exportData);
-    } catch { return null; }
+    try { return JSON.parse(exportData); } catch { return null; }
   }, [exportData]);
 
   const handleExport = async () => {
-    if (selectedExport.length === 0 && !confirm('未选择分类，将导出所有配置。继续？')) return;
+    if (selectedExport.length === 0 && !window.confirm('未选择分类，将导出所有配置。继续？')) return;
     setExporting(true);
     try {
       const res = await exportConfig(selectedExport);
       if (res.success) {
         const json = JSON.stringify(res.data, null, 2);
         setExportData(json);
-        // 下载 JSON 文件
+        setValidation(null); setValidatedSnapshot('');
+        const pad = (n: number) => String(n).padStart(2, '0');
+        const d = new Date();
+        const ts = `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}_${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}`;
         const blob = new Blob([json], { type: 'application/json' });
         const url = URL.createObjectURL(blob);
         const a = document.createElement('a');
         a.href = url;
-        a.download = 'config_export_' + new Date().toISOString().slice(0, 10) + '.json';
+        a.download = `data-sync-config_${ts}.json`;
         document.body.appendChild(a);
         a.click();
         document.body.removeChild(a);
         URL.revokeObjectURL(url);
-        message.success('导出成功');
+        // 摘要
+        const summary = categories
+          .filter(c => Array.isArray(res.data[c.fileKey]))
+          .map(c => `${c.label} ${res.data[c.fileKey].length} 条`)
+          .join('，');
+        message.success(`导出成功：${summary || '空数据'}`);
       } else message.error(res.message);
     } catch (err: any) { message.error('导出失败: ' + err.message); }
     finally { setExporting(false); }
   };
 
+  /** 校验导入数据:结构、数量、引用完整性、与当前系统的覆盖冲突 */
+  const validateImportData = (data: any): { items: ValidationItem[]; total: number } => {
+    const items: ValidationItem[] = [];
+    let total = 0;
+    const fileArr = (key: string): any[] | null => {
+      const v = data[key];
+      if (v === undefined) return null;
+      if (!Array.isArray(v)) { items.push({ status: 'error', label: categories.find(c => c.fileKey === key)?.label || key, detail: '数据格式错误(应为数组)' }); return null; }
+      return v;
+    };
+    const idSet = (key: string): Set<number> | null => {
+      const arr = fileArr(key);
+      return arr ? new Set(arr.map((t: any) => Number(t.id)).filter(Boolean)) : null;
+    };
+
+    const tokenSet = idSet('token_configs');
+    const pgSet = idSet('pg_sources');
+    const rtArr = fileArr('remote_tables');
+    const rtSet = idSet('remote_tables');
+    const scArr = fileArr('sync_configs');
+    const scSet = idSet('sync_configs');
+    const bcSet = idSet('backup_configs');
+
+    for (const c of categories) {
+      const arr = fileArr(c.fileKey);
+      if (arr === null) continue;
+      total += arr.length;
+      items.push({ status: 'ok', label: c.label, detail: `${arr.length} 条` });
+    }
+    if (total === 0) {
+      items.push({ status: 'error', label: '数据为空', detail: '文件中没有可导入的配置数据' });
+      return { items, total: 0 };
+    }
+
+    // 引用完整性(仅当被引用分类也在文件中时可严格校验)
+    if (rtArr && tokenSet) {
+      const missing = rtArr.filter((t: any) => (t.token_config_id || 0) > 0 && !tokenSet.has(Number(t.token_config_id)));
+      if (missing.length === 0) items.push({ status: 'ok', label: '引用检查 · 远程表 → Token 配置', detail: `${rtArr.length} 张表的归属配置均在文件内` });
+      else items.push({
+        status: 'warn', label: '引用检查 · 远程表 → Token 配置',
+        detail: `${missing.length} 张表引用的 Token 配置(id: ${[...new Set(missing.map((t: any) => t.token_config_id))].join(', ')})不在文件内,导入后将自动回退到第一条 Token 配置`,
+      });
+    } else if (rtArr && !data.token_configs) {
+      items.push({ status: 'warn', label: '引用检查 · 远程表 → Token 配置', detail: '文件未包含 Token 配置,将沿用目标系统现有归属;无效归属自动回退到第一条' });
+    }
+
+    if (scArr) {
+      const missingPg = scArr.filter((c: any) => (c.pg_source_id || 0) > 0 && pgSet && !pgSet.has(Number(c.pg_source_id)));
+      const missingRt = scArr.filter((c: any) => (c.remote_table_id || 0) > 0 && rtSet && !rtSet.has(Number(c.remote_table_id)));
+      if (!pgSet) items.push({ status: 'warn', label: '引用检查 · 导入配置 → PG 数据源', detail: '文件未包含 PG 数据源,请确认目标系统已存在对应数据源,否则导入的配置将无法执行' });
+      else if (missingPg.length > 0) items.push({ status: 'warn', label: '引用检查 · 导入配置 → PG 数据源', detail: `${missingPg.length} 条配置引用的 PG 数据源不在文件内` });
+      else items.push({ status: 'ok', label: '引用检查 · 导入配置 → PG 数据源', detail: '全部引用完整' });
+      if (!rtSet) items.push({ status: 'warn', label: '引用检查 · 导入配置 → 远程表', detail: '文件未包含远程数据表,请确认目标系统已存在对应表配置' });
+      else if (missingRt.length > 0) items.push({ status: 'warn', label: '引用检查 · 导入配置 → 远程表', detail: `${missingRt.length} 条配置引用的远程表不在文件内` });
+      else items.push({ status: 'ok', label: '引用检查 · 导入配置 → 远程表', detail: '全部引用完整' });
+    }
+
+    if (data.sync_tasks && Array.isArray(data.sync_tasks)) {
+      const broken = data.sync_tasks.filter((t: any) => {
+        try {
+          const ids: number[] = JSON.parse(t.sync_config_ids || '[]');
+          return scSet && ids.some(id => !scSet.has(Number(id)));
+        } catch { return false; }
+      });
+      if (scSet && broken.length > 0) items.push({ status: 'warn', label: '引用检查 · 定时任务 → 导入配置', detail: `${broken.length} 个任务引用的导入配置不在文件内` });
+      else if (bcSet) {
+        const missingBc = data.sync_tasks.filter((t: any) => t.task_type === 'backup' && (t.backup_config_id || 0) > 0 && !bcSet.has(Number(t.backup_config_id)));
+        if (missingBc.length > 0) items.push({ status: 'warn', label: '引用检查 · 定时任务 → 备份配置', detail: `${missingBc.length} 个备份任务引用的备份配置不在文件内` });
+        else items.push({ status: 'ok', label: '引用检查 · 定时任务', detail: `${data.sync_tasks.length} 个任务引用完整` });
+      }
+    }
+
+    // 与当前系统对比:将覆盖的现有配置
+    const overwrites: string[] = [];
+    for (const c of categories) {
+      const arr = fileArr(c.fileKey);
+      if (!arr) continue;
+      const cur = currentIds[c.key] || [];
+      const overlap = arr.filter((t: any) => Number(t.id) > 0 && cur.includes(Number(t.id))).length;
+      if (overlap > 0) overwrites.push(`${c.label} ${overlap} 条`);
+    }
+    if (overwrites.length > 0) {
+      items.push({ status: 'warn', label: '覆盖提示 · 与当前系统同 ID', detail: `导入将覆盖现有配置:${overwrites.join('、')}(其余为新增)` });
+    } else {
+      items.push({ status: 'ok', label: '覆盖检查', detail: '与当前系统无 ID 冲突,全部为新增' });
+    }
+
+    return { items, total };
+  };
+
+  const handleValidate = () => {
+    if (!exportData) { message.warning('请先粘贴或上传 JSON 配置数据'); return; }
+    const data = parsedJson;
+    if (!data || typeof data !== 'object') { message.error('JSON 格式错误,无法校验'); setValidation(null); return; }
+    setValidating(true);
+    try {
+      const report = validateImportData(data);
+      setValidation(report);
+      setValidatedSnapshot(exportData);
+      const errs = report.items.filter(i => i.status === 'error').length;
+      const warns = report.items.filter(i => i.status === 'warn').length;
+      if (errs > 0) message.error(`校验未通过: ${errs} 项错误`);
+      else if (warns > 0) message.warning(`校验完成: 共 ${report.total} 条数据,${warns} 项需注意`);
+      else message.success(`校验通过: 共 ${report.total} 条数据,引用完整`);
+    } finally { setValidating(false); }
+  };
+
   const handleImport = async () => {
     if (!exportData) { message.warning('请先粘贴或上传 JSON 配置数据'); return; }
-    if (selectedExport.length === 0 && !confirm('未选择分类，将导入所有配置。继续？')) return;
-    setImporting(true);
-    try {
-      const data = JSON.parse(exportData);
-      const res = await importConfig(data, selectedExport);
-      if (res.success) {
-        const result = res.data;
-        let msg = '导入完成: ' + (result?.imported || []).join(', ');
-        if (result?.errors && result.errors.length > 0) msg += '，错误: ' + result.errors.join('; ');
-        message.success(msg);
-      } else message.error(res.message);
-    } catch (err: any) {
-      if (err instanceof SyntaxError) message.error('JSON 格式错误: ' + err.message);
-      else message.error('导入失败: ' + err.message);
+    const data = parsedJson;
+    if (!data || typeof data !== 'object') { message.error('JSON 格式错误'); return; }
+    // 数据变化后需重新校验
+    let report = validation;
+    if (!report || validatedSnapshot !== exportData) {
+      report = validateImportData(data);
+      setValidation(report); setValidatedSnapshot(exportData);
     }
-    finally { setImporting(false); }
+    const errs = report.items.filter(i => i.status === 'error');
+    const warns = report.items.filter(i => i.status === 'warn');
+    if (errs.length > 0) { message.error(`校验未通过(${errs[0].label}: ${errs[0].detail}),已取消导入`); return; }
+
+    const summaryText = `共 ${report.total} 条配置` + (selectedExport.length > 0 ? `(仅导入勾选的 ${selectedExport.length} 类)` : '(全部分类)');
+    Modal.confirm({
+      title: '确认导入配置?',
+      icon: <QuestionCircleOutlined style={{ color: '#faad14' }} />,
+      width: 560,
+      content: (
+        <div style={{ fontSize: 13 }}>
+          <p>{summaryText}{warns.length > 0 ? `,${warns.length} 项需注意:` : ''}</p>
+          {warns.map((w, i) => (
+            <div key={i} style={{ background: '#fffbe6', border: '1px solid #ffe58f', borderRadius: 4, padding: '4px 8px', marginBottom: 4, fontSize: 12 }}>
+              ⚠️ {w.label}: {w.detail}
+            </div>
+          ))}
+          {warns.length === 0 && <p style={{ color: '#52c41a' }}>校验全部通过,引用完整。</p>}
+          <p style={{ color: '#999', fontSize: 12 }}>同 ID 的现有配置将被覆盖,其余为新增;导入完成后自动刷新。</p>
+        </div>
+      ),
+      okText: '开始导入',
+      cancelText: '取消',
+      onOk: async () => {
+        setImporting(true);
+        try {
+          const res = await importConfig(data, selectedExport);
+          if (res.success) {
+            const result = res.data;
+            let msg = '导入完成: ' + (result?.imported || []).join(', ');
+            if (result?.errors && result.errors.length > 0) msg += ',错误: ' + result.errors.join('; ');
+            message.success(msg);
+            refreshCounts();
+          } else message.error(res.message);
+        } catch (err: any) { message.error('导入失败: ' + err.message); }
+        finally { setImporting(false); }
+      },
+    });
   };
 
   const handleClear = async () => {
-    if (selectedClear.length === 0 && !confirm('未选择分类，将清空所有配置！确定？')) return;
-    if (!confirm('确定要清空所选配置？此操作不可恢复！')) return;
-    setClearing(true);
-    try {
-      const res = await clearConfig(selectedClear);
-      if (res.success) message.success(res.message);
-      else message.error(res.message);
-    } catch (err: any) { message.error('清空失败: ' + err.message); }
-    finally { setClearing(false); }
+    if (selectedClear.length === 0 && !window.confirm('未选择分类，将清空所有配置！确定？')) return;
+    Modal.confirm({
+      title: '确定清空所选配置？',
+      icon: <QuestionCircleOutlined style={{ color: '#ff4d4f' }} />,
+      content: '此操作不可恢复!',
+      okText: '确定清空',
+      okType: 'danger',
+      cancelText: '取消',
+      onOk: async () => {
+        setClearing(true);
+        try {
+          const res = await clearConfig(selectedClear);
+          if (res.success) { message.success(res.message); refreshCounts(); }
+          else message.error(res.message);
+        } catch (err: any) { message.error('清空失败: ' + err.message); }
+        finally { setClearing(false); }
+      },
+    });
   };
 
   const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -526,7 +709,8 @@ const ExportImportTab: React.FC = () => {
     const reader = new FileReader();
     reader.onload = (ev) => {
       setExportData(ev.target?.result as string || '');
-      message.info('已加载文件: ' + file.name);
+      setValidation(null); setValidatedSnapshot('');
+      message.info(`已加载文件: ${file.name},请点击「校验数据」核对后再导入`);
     };
     reader.readAsText(file);
     e.target.value = '';
@@ -536,13 +720,16 @@ const ExportImportTab: React.FC = () => {
     <div>
       <Card size="small" title="导出配置" type="inner" style={{ marginBottom: 16 }}>
         <div style={{ marginBottom: 12 }}>
-          <Checkbox.Group options={categories.map(c => ({ value: c.key, label: c.label }))}
-            value={selectedExport} onChange={setSelectedExport as any} />
+          <Checkbox.Group options={categories.map(c => ({
+            value: c.key, label: `${c.label} (${counts[c.key] ?? 0})`,
+          }))} value={selectedExport} onChange={setSelectedExport as any} />
         </div>
         <Button type="primary" icon={<DownloadOutlined />} onClick={handleExport} loading={exporting}>
           导出选中配置
         </Button>
-        <Text type="secondary" style={{ marginLeft: 12, fontSize: 12 }}>不选则导出所有</Text>
+        <Text type="secondary" style={{ marginLeft: 12, fontSize: 12 }}>
+          不选则导出所有;文件名自动带时间戳
+        </Text>
       </Card>
 
       <Card size="small" title="导入配置" type="inner" style={{ marginBottom: 16 }}>
@@ -553,8 +740,30 @@ const ExportImportTab: React.FC = () => {
             </Button>
             <input id="config-file-input" type="file" accept=".json" style={{ display: 'none' }}
               onChange={handleFileUpload} />
+            <Button icon={<CheckCircleOutlined />} onClick={handleValidate} loading={validating}
+              disabled={!exportData}>
+              校验数据
+            </Button>
           </Space>
         </div>
+        {validation && (
+          <div style={{
+            marginBottom: 12, border: '1px solid #f0f0f0', borderRadius: 6,
+            padding: '8px 12px', background: '#fafafa', maxHeight: 260, overflow: 'auto',
+          }}>
+            {validation.items.map((it, i) => (
+              <div key={i} style={{ display: 'flex', gap: 8, alignItems: 'flex-start', padding: '3px 0', fontSize: 12 }}>
+                {it.status === 'ok' && <CheckCircleOutlined style={{ color: '#52c41a', marginTop: 2 }} />}
+                {it.status === 'warn' && <QuestionCircleOutlined style={{ color: '#faad14', marginTop: 2 }} />}
+                {it.status === 'error' && <CloseCircleOutlined style={{ color: '#ff4d4f', marginTop: 2 }} />}
+                <div>
+                  <Text strong={it.status !== 'ok'}>{it.label}</Text>
+                  <Text type="secondary"> — {it.detail}</Text>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
         <div style={{ marginBottom: 12 }}>
           <Space>
             <Button size="small" type={jsonViewMode ? 'primary' : 'default'} onClick={() => setJsonViewMode(true)}>
@@ -575,22 +784,26 @@ const ExportImportTab: React.FC = () => {
           </div>
         ) : (
           <Input.TextArea rows={8} value={exportData}
-            onChange={e => setExportData(e.target.value)}
-            placeholder="粘贴 JSON 配置数据或选择文件..." style={{ fontFamily: 'monospace', fontSize: 12, marginBottom: 12 }} />
+            onChange={e => { setExportData(e.target.value); setValidation(null); setValidatedSnapshot(''); }}
+            placeholder="粘贴 JSON 配置数据或选择文件... 校验通过后再导入" style={{ fontFamily: 'monospace', fontSize: 12, marginBottom: 12 }} />
         )}
-        <Checkbox.Group options={categories.map(c => ({ value: c.key, label: c.label }))}
-          value={selectedExport} onChange={setSelectedExport as any}
-          style={{ marginBottom: 12, display: 'block' }} />
+        <div style={{ marginBottom: 12 }}>
+          <Checkbox.Group options={categories.map(c => ({
+            value: c.key, label: `${c.label} (当前 ${counts[c.key] ?? 0})`,
+          }))} value={selectedExport} onChange={setSelectedExport as any}
+            style={{ display: 'block' }} />
+          <Text type="secondary" style={{ fontSize: 12 }}>不选则导入所有;同 ID 的现有配置将被覆盖</Text>
+        </div>
         <Button type="primary" icon={<ImportOutlined />} onClick={handleImport} loading={importing}>
           导入配置
         </Button>
-        <Text type="secondary" style={{ marginLeft: 12, fontSize: 12 }}>不选则导入所有</Text>
       </Card>
 
       <Card size="small" title="清空配置" type="inner">
         <div style={{ marginBottom: 12 }}>
-          <Checkbox.Group options={categories.map(c => ({ value: c.key, label: c.label }))}
-            value={selectedClear} onChange={setSelectedClear as any} />
+          <Checkbox.Group options={categories.map(c => ({
+            value: c.key, label: `${c.label} (${counts[c.key] ?? 0})`,
+          }))} value={selectedClear} onChange={setSelectedClear as any} />
         </div>
         <Button danger icon={<DeleteOutlined />} onClick={handleClear} loading={clearing}>
           清空选中配置
